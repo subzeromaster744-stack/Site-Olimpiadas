@@ -48,6 +48,10 @@ Qualquer pessoa que abrir o link principal pode **criar uma conta** (usuário + 
 - **Respostas por pessoa:** no painel, clique no nome (ou em "Ver respostas") para ver as notas da pessoa e a soma por seção, ao vivo.
 - **Estilos:** em Configurar → "Estilo do formulário": Azul (padrão), Preto e dourado (visual do ano passado) ou Personalizado (cor de destaque, fundo, cartões claros/escuros). O banner pode ser trocado por uma imagem (ex.: a arte do ano passado).
 
+## App instalável (PWA)
+
+O painel (link principal) pode ser instalado como app no celular ou no computador: no Chrome/Edge/Android aparece o botão "Instalar" na parte de baixo da tela; no iPhone, use Compartilhar → Adicionar à Tela de Início. O `sw.js` guarda só o "esqueleto" do site (abre mesmo sem internet); dados das votações, imagens e PDFs nunca vão para o cache. A página de votação (QR Code) não é instalável de propósito.
+
 ## Estrutura
 ```
 src/worker.js   entrada: login admin (HMAC), roteia API/WebSocket para o Durable Object, serve /public
