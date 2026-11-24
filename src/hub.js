@@ -111,7 +111,7 @@ export class Hub extends DurableObject {
   q(sql, ...b) { return this.sql.exec(sql, ...b).toArray(); }
   pollRow(id) { return this.q("SELECT * FROM polls WHERE id=?", id)[0]; }
 
-  publicPoll(r) {
+  publicPoll(r, forAdmin = false) {
     const vers = {};
     for (const i of this.q("SELECT sec, ver FROM images WHERE poll_id=?", r.id)) vers[i.sec] = i.ver;
     const docs = {};
@@ -122,6 +122,8 @@ export class Hub extends DurableObject {
       pdf: docs[i] ? `/pdf/${r.id}/${i}?v=${docs[i].ver}` : null,
       pdfName: docs[i]?.name ?? null,
       pdfSize: docs[i]?.size ?? null,
+      // nome do competidor: só o organizador vê (quem vota não enxerga, para não influenciar)
+      ...(forAdmin ? { competitor: s.competitor || "" } : {}),
     }));
     return {
       id: r.id, rodada: r.rodada, categoria: r.categoria, turno: r.turno, title: r.title,
@@ -164,7 +166,7 @@ export class Hub extends DurableObject {
   }
 
   adminPoll(r, exclude) {
-    return { ...this.publicPoll(r), participants: this.participants(r, exclude), results: this.results(r.id) };
+    return { ...this.publicPoll(r, true), participants: this.participants(r, exclude), results: this.results(r.id) };
   }
 
   // owner: dono do formulário. O administrador (tag "all") recebe tudo; cada organizador só o que é dele.
@@ -198,9 +200,9 @@ export class Hub extends DurableObject {
     const categoria = clean(b.categoria, 40) || "Geral";
     const turno = clean(b.turno, 30);
     let sections = Array.isArray(b.sections)
-      ? b.sections.slice(0, 12).map((s) => ({ title: clean(typeof s === "string" ? s : s?.title, 120) }))
+      ? b.sections.slice(0, 12).map((s) => ({ title: clean(typeof s === "string" ? s : s?.title, 120), competitor: clean(typeof s === "string" ? "" : s?.competitor, 80) }))
       : [];
-    if (!sections.length) sections = Array.from({ length: 4 }, () => ({ title: "" }));
+    if (!sections.length) sections = Array.from({ length: 4 }, () => ({ title: "", competitor: "" }));
     let questions = Array.isArray(b.questions) ? b.questions.map((x) => clean(x, 160)).filter(Boolean).slice(0, 20) : [];
     if (!questions.length) questions = DEFAULT_QUESTIONS;
     const title = clean(b.title, 120) || [rodada, categoria, turno].filter(Boolean).join(" ");

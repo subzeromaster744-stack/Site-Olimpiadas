@@ -88,7 +88,7 @@ function connect() {
         const p = A.polls.get(m.poll); if (!p) return;
         p.participants = m.participants; p.results = m.results;
         renderSide(); renderBar();
-        if (A.sel === m.poll && A.view === "poll") { renderHead(); if (["live", "resultados"].includes(A.tab)) renderTab(); }
+        if (A.sel === m.poll && A.view === "poll") { renderHead(); renderTabs(); if (["live", "resultados", "bloqueados"].includes(A.tab)) renderTab(); }
       } else if (m.t === "deleted") {
         A.polls.delete(m.poll);
         if (A.sel === m.poll) { A.sel = A.polls.keys().next().value || null; A.view = "poll"; A.tab = "live"; }
@@ -146,7 +146,7 @@ function welcome() {
     h("p", { class: "small", style: "max-width:520px;margin:0 auto 22px" }, "É rápido: você monta o formulário, mostra o QR Code e acompanha tudo em tempo real."),
     h("div", { class: "wsteps" }, step("1", "Crie o formulário", "Rodada, categoria, turno, seções com imagem e perguntas."),
       step("2", "Mostre o QR Code", "Quem escanear informa o nome e já pode votar."),
-      step("3", "Acompanhe ao vivo", "Veja quem entrou, as médias e expulse quem não for convidado.")),
+      step("3", "Acompanhe ao vivo", "Veja quem entrou, os resultados e expulse quem não for convidado.")),
     h("button", { class: "btn", type: "button", style: "margin-top:24px;font-size:17px;padding:14px 30px", onclick: () => { A.view = "new"; renderAll(); } }, "＋ Criar formulário"));
 }
 function renderHead() {
@@ -162,12 +162,13 @@ function renderHead() {
 const kpi = (n, l, cls) => h("div", { class: "kpi " + (cls || "") }, h("b", {}, String(n)), h("span", {}, l));
 function renderTabs() {
   const t = $("#tabs"); if (!t) return;
-  const tabs = [["live", "👥 Ao vivo"], ["resultados", "📊 Resultados"], ["qr", "🔳 QR Code"], ["config", "⚙️ Configurar"]];
+  const p = A.polls.get(A.sel), nk = p ? p.participants.filter((x) => x.status === "kicked").length : 0;
+  const tabs = [["live", "👥 Ao vivo"], ["resultados", "📊 Resultados"], ["bloqueados", "🚫 Bloqueados" + (nk ? ` (${nk})` : "")], ["qr", "🔳 QR Code"], ["config", "⚙️ Configurar"]];
   t.replaceChildren(...tabs.map(([k, l]) => h("button", { type: "button", class: A.tab === k ? "on" : "", onclick: () => { A.tab = k; renderTabs(); renderTab(); } }, l)));
 }
 function renderTab() {
   const el = $("#tab"); const p = A.polls.get(A.sel); if (!el || !p) return;
-  el.replaceChildren(A.tab === "live" ? tabLive(p) : A.tab === "resultados" ? tabResults(p) : A.tab === "qr" ? tabQR(p) : configTab(p));
+  el.replaceChildren(A.tab === "live" ? tabLive(p) : A.tab === "resultados" ? tabResults(p) : A.tab === "bloqueados" ? tabBlocked(p) : A.tab === "qr" ? tabQR(p) : configTab(p));
 }
 
 /* ---------- ao vivo (participantes) ---------- */
@@ -194,16 +195,25 @@ function tabLive(p) {
     }
     w.append(h("div", { style: "overflow-x:auto" }, h("table", { class: "t" }, h("thead", {}, h("tr", {}, ["Situação", "Nome", "Entrou às", "Progresso", ""].map((c) => h("th", {}, c)))), tb)));
   }
-  if (kicked.length) {
-    w.append(h("div", { class: "head2", style: "margin:24px 0 8px;align-items:center" },
-        h("h3", { style: "margin:0;color:var(--err)" }, `Expulsos (${kicked.length})`),
-        h("button", { class: "btn danger sm", type: "button", onclick: () => deleteKicked(p, kicked) }, "🗑 Apagar todos")),
-      h("table", { class: "t" }, h("tbody", {}, kicked.map((x) => h("tr", {}, h("td", {}, h("b", {}, x.name)), h("td", { class: "small" }, "Bloqueado nesta votação"),
+  if (kicked.length) w.append(h("p", { class: "small", style: "margin:18px 0 0" }, `🚫 ${kicked.length} pessoa(s) bloqueada(s). `,
+    h("a", { href: "#", onclick: (e) => { e.preventDefault(); A.tab = "bloqueados"; renderTabs(); renderTab(); } }, "Ver lista de bloqueados")));
+  return w;
+}
+/* ---------- bloqueados ---------- */
+function tabBlocked(p) {
+  const kicked = p.participants.filter((x) => x.status === "kicked");
+  if (!kicked.length) return h("div", { class: "empty" }, h("div", { style: "font-size:42px" }, "✅"), h("b", {}, "Ninguém bloqueado"),
+    h("div", { class: "small", style: "margin-top:6px" }, "Quando você expulsar alguém na aba Ao vivo, o nome aparece aqui e fica impedido de votar neste formulário."));
+  return h("div", {},
+    h("div", { class: "head2", style: "margin:0 0 8px;align-items:center" },
+      h("p", { class: "small", style: "margin:0" }, `${kicked.length} nome(s) bloqueado(s) neste formulário. Readmitir libera a pessoa; apagar remove o nome e as respostas dela de vez.`),
+      h("button", { class: "btn danger sm", type: "button", onclick: () => deleteKicked(p, kicked) }, "🗑 Apagar todos")),
+    h("div", { style: "overflow-x:auto" }, h("table", { class: "t" },
+      h("thead", {}, h("tr", {}, ["Nome", "Entrou às", "Respostas dadas", ""].map((c) => h("th", {}, c)))),
+      h("tbody", {}, kicked.map((x) => h("tr", {}, h("td", {}, h("b", {}, x.name)), h("td", {}, hhmm(x.joined_at)), h("td", {}, `${x.answered}/${x.total}`),
         h("td", { class: "c acts" },
           h("button", { class: "btn ghost sm", type: "button", onclick: () => act(p, x, "unkick") }, "Readmitir"),
-          h("button", { class: "btn danger sm", type: "button", onclick: () => removeOne(p, x) }, "🗑 Apagar")))))));
-  }
-  return w;
+          h("button", { class: "btn danger sm", type: "button", onclick: () => removeOne(p, x) }, "🗑 Apagar"))))))));
 }
 const act = (p, x, action) => api(`/api/polls/${p.id}/participants/${x.id}/${action}`, { method: "POST" }).catch((e) => alert(e.message));
 function annul(p, x) {
@@ -225,17 +235,26 @@ function kick(p, x) {
 
 /* ---------- resultados ---------- */
 function tabResults(p) {
-  const head = h("tr", {}, h("th", {}, "Pergunta"), p.sections.map((s, i) => h("th", { class: "c" }, s.title || `Seção ${i + 1}`)));
-  const body = h("tbody", {}, p.questions.map((q, j) => h("tr", {}, h("td", {}, q), p.sections.map((_, i) => { const c = p.results.cells[`${i}_${j}`]; return h("td", { class: "c" }, c ? fmt(c.avg) : "–"); }))));
-  const foot = h("tr", {}, h("td", {}, h("b", {}, "Média do projeto")), p.sections.map((_, i) => {
-    let s = 0, n = 0; p.questions.forEach((_, j) => { const c = p.results.cells[`${i}_${j}`]; if (c) { s += c.avg * c.n; n += c.n; } });
-    return h("td", { class: "c" }, h("b", {}, fmt(n ? s / n : 0)));
-  }));
+  const sum = (i, j) => { const c = p.results.cells[`${i}_${j}`]; return c ? Math.round(c.avg * c.n) : 0; };
+  const totals = p.sections.map((_, i) => p.questions.reduce((t, _q, j) => t + sum(i, j), 0));
+  const max = Math.max(0, ...totals), winners = max > 0 ? totals.map((t, i) => (t === max ? i : -1)).filter((i) => i >= 0) : [];
+  const head = h("tr", {}, h("th", {}, "Pergunta"), p.sections.map((s, i) => h("th", { class: "c" + (winners.includes(i) ? " win" : "") },
+    winners.includes(i) ? "🏆 " : "", s.title || `Seção ${i + 1}`, s.competitor ? h("div", { class: "comp" }, s.competitor) : null)));
+  const body = h("tbody", {}, p.questions.map((q, j) => h("tr", {}, h("td", {}, q), p.sections.map((_, i) => h("td", { class: "c" + (winners.includes(i) ? " win" : "") }, sum(i, j) ? String(sum(i, j)) : "–")))));
+  const foot = h("tr", {}, h("td", {}, h("b", {}, "Total do projeto (soma de todas as notas)")), totals.map((t, i) => h("td", { class: "c" + (winners.includes(i) ? " win" : "") }, h("b", {}, t ? String(t) : "–"))));
+  const label = (i) => `${p.sections[i].title || "Seção " + (i + 1)}${p.sections[i].competitor ? " — " + p.sections[i].competitor : ""}`;
+  const banner = winners.length
+    ? h("div", { class: "winner" }, h("div", { class: "trophy" }, "🏆"), h("div", {},
+        h("small", {}, winners.length > 1 ? `Empate em 1º lugar · ${max} pontos` : `Vencedor · ${max} pontos`),
+        ...winners.map((i) => h("div", { class: "wname" }, p.sections[i].competitor || h("span", { class: "dim" }, "(sem competidor informado)"),
+          h("span", { class: "wproj" }, " · " + (p.sections[i].title || "Seção " + (i + 1)))))))
+    : h("div", { class: "winner none" }, "O vencedor aparece aqui assim que chegarem as primeiras notas.");
   return h("div", {},
-    h("div", { class: "head2" }, h("p", { class: "small", style: "margin:0" }, `${p.results.respondents} participante(s) com notas · atualiza sozinho · votos de expulsos e de respostas anuladas não contam.`),
+    banner,
+    h("div", { class: "head2" }, h("p", { class: "small", style: "margin:0" }, `${p.results.respondents} participante(s) com notas · atualiza sozinho · cada célula é a soma das notas (1 a 5) · votos de expulsos e de respostas anuladas não contam.`),
       h("button", { class: "btn ghost sm", type: "button", onclick: () => exportCsv(p) }, "⬇ Baixar CSV")),
     h("div", { style: "overflow-x:auto" }, h("table", { class: "t" }, h("thead", {}, head), body, h("tfoot", {}, foot))),
-    null);
+    p.sections.some((s) => !s.competitor) ? h("p", { class: "small", style: "margin-top:12px" }, "Dica: informe o nome do competidor de cada seção em Configurar para ele aparecer aqui.") : null);
 }
 async function exportCsv(p) {
   try {
@@ -345,7 +364,7 @@ function formView(p, opts = {}) {
   const edit = !!p, base = p || opts.from || null, dup = !edit && !!opts.from;
   const v = { rodada: base?.rodada || RODADAS[0], categoria: base?.categoria || CATS[0], turno: base?.turno ?? TURNOS[0], title: edit ? p.title : "", bannerBig: base?.banner?.big ?? "10", bannerSub: base?.banner?.sub ?? "Anos · Olimpíadas" };
   const bn = { img: base?.banner?.img || null, file: null, removed: false };
-  const mkDraft = (s) => ({ title: s?.title || "", img: s?.img || null, file: null, removed: false, pdf: null, pdfUrl: s?.pdf || null, pdfName: s?.pdfName || null, pdfSize: s?.pdfSize || null, pdfPages: null, pdfRemoved: false });
+  const mkDraft = (s) => ({ title: s?.title || "", competitor: s?.competitor || "", img: s?.img || null, file: null, removed: false, pdf: null, pdfUrl: s?.pdf || null, pdfName: s?.pdfName || null, pdfSize: s?.pdfSize || null, pdfPages: null, pdfRemoved: false });
   const drafts = (base?.sections || Array.from({ length: 4 }, () => null)).map(mkDraft);
   const qs = h("textarea", { rows: "8", placeholder: "Uma pergunta por linha" }); qs.value = (base?.questions || DEF_Q).join("\n");
 
@@ -394,6 +413,7 @@ function formView(p, opts = {}) {
   const list = h("div", {});
   const drawSecs = () => list.replaceChildren(...drafts.map((d, i) => {
     const t = h("input", { type: "text", maxlength: "120", placeholder: "Nome do projeto (ex.: Usinagem de Eixos A)", value: d.title }); t.addEventListener("input", () => (d.title = t.value));
+    const comp = h("input", { type: "text", maxlength: "80", placeholder: "Competidor (nome da pessoa)", value: d.competitor, class: "compin" }); comp.addEventListener("input", () => (d.competitor = comp.value));
     const pv = h("div", { class: "thumb" }), badge = h("div", { class: "pdfbadge" });
     const showPv = () => {
       pv.replaceChildren(); const src = d.file ? URL.createObjectURL(d.file) : d.removed ? null : d.img;
@@ -420,7 +440,7 @@ function formView(p, opts = {}) {
     });
     showPv();
     return h("div", { class: "secrow" }, h("div", { class: "secnum" }, String(i + 1)),
-      h("div", { class: "secbody" }, t, h("div", { class: "r" }, h("label", { class: "btn ghost sm", for: `f${i}` }, "📎 Imagem ou PDF"), f,
+      h("div", { class: "secbody" }, t, comp, h("div", { class: "r" }, h("label", { class: "btn ghost sm", for: `f${i}` }, "📎 Imagem ou PDF"), f,
         h("button", { class: "btn ghost sm", type: "button", onclick: () => { d.file = null; d.removed = true; d.pdf = null; d.pdfPages = null; if (d.pdfUrl) d.pdfRemoved = true; f.value = ""; showPv(); } }, "Remover")), badge),
       pv);
   }));
@@ -440,7 +460,7 @@ function formView(p, opts = {}) {
     if (!qs.value.split("\n").some((x) => x.trim())) { err.textContent = "Escreva ao menos uma pergunta."; return; }
     btn.disabled = true; btn.textContent = "Salvando…";
     try {
-      const body = JSON.stringify({ rodada: v.rodada, categoria: v.categoria, turno: v.turno, title: v.title, bannerBig: v.bannerBig, bannerSub: v.bannerSub, sections: drafts.map((d) => ({ title: d.title })), questions: qs.value.split("\n") });
+      const body = JSON.stringify({ rodada: v.rodada, categoria: v.categoria, turno: v.turno, title: v.title, bannerBig: v.bannerBig, bannerSub: v.bannerSub, sections: drafts.map((d) => ({ title: d.title, competitor: d.competitor })), questions: qs.value.split("\n") });
       const poll = edit ? (await api(`/api/polls/${p.id}`, { method: "PUT", body }), p) : await api("/api/polls", { method: "POST", body });
       const putBanner = (blob) => api(`/api/polls/${poll.id}/image/-1`, { method: "PUT", body: blob, headers: { "content-type": blob.type || "image/jpeg" } });
       if (bn.file) await putBanner(bn.file);

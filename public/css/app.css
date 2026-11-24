@@ -180,3 +180,11 @@ td.acts{white-space:nowrap}td.acts .btn{margin-left:6px}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px;max-width:420px}
 .lbl.sm{font-size:12px;font-weight:600;color:#4a6378;display:block;margin-bottom:4px}
 .t th.c{white-space:normal;min-width:90px}
+
+.compin{margin-top:8px}
+.t th.win,.t td.win{background:#fff8dc}
+.t th .comp{font-weight:500;font-size:12px;color:#4a6378;margin-top:2px}
+.winner{display:flex;gap:14px;align-items:center;background:linear-gradient(135deg,#fff6d6,#ffe9a8);border:1px solid #f0cf6b;border-radius:12px;padding:14px 18px;margin-bottom:14px}
+.winner .trophy{font-size:38px}.winner small{color:#7a5b00;font-weight:600;text-transform:uppercase;letter-spacing:.5px;font-size:11px}
+.winner .wname{font-size:20px;font-weight:800;color:#5a4200}.winner .wproj{font-size:14px;font-weight:600;color:#7a5b00}.winner .dim{font-weight:500;opacity:.7}
+.winner.none{background:#eef3f8;border-color:#d4dfea;color:#4a6378;font-size:14px}
