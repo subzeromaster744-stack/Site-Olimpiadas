@@ -68,7 +68,8 @@ function showLogin(msg, mode = "in") {
     h("div", { class: "seg" }, tab("in", "Entrar"), tab("up", "Criar conta")),
     h("div", { class: "stack" }, ...(reg ? [name, user, pw, pw2, code] : [user, pw])),
     err, h("div", { style: "margin-top:12px" }, btn),
-    h("p", { class: "small", style: "margin:16px 0 0;text-align:center" }, "Quem vai apenas votar não precisa de conta: basta escanear o QR Code.")));
+    h("p", { class: "small", style: "margin:16px 0 0;text-align:center" }, "Quem vai apenas votar não precisa de conta: basta escanear o QR Code."),
+    h("p", { class: "small", style: "margin:10px 0 0;text-align:center" }, "Suporte: ", h("a", { href: "mailto:" + SUPPORT_EMAIL }, SUPPORT_EMAIL))));
 }
 
 /* ---------- tempo real ---------- */
@@ -103,7 +104,7 @@ function boot() { A.view = "poll"; layout(); connect(); }
 /* ---------- layout ---------- */
 function layout() {
   root.replaceChildren(h("div", { class: "adm" }, h("div", { class: "bar", id: "bar" }),
-    h("div", { class: "layout" }, h("aside", { class: "card side", id: "side" }), h("section", { class: "card main", id: "main" }))));
+    h("div", { class: "layout" }, h("aside", { class: "card side", id: "side" }), h("section", { class: "card main", id: "main" })), supportEl()));
   renderAll();
 }
 function renderAll() { renderBar(); renderSide(); renderMain(); }

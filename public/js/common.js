@@ -76,3 +76,7 @@ function applyTheme(el, t) {
   if (el === document.body && th) el.style.backgroundAttachment = "fixed";
   if (th) for (const [k, val] of Object.entries(th.vars)) el.style.setProperty(k, val);
 }
+
+/* contato de suporte (rodapé) */
+const SUPPORT_EMAIL = "kevinca@weg.net";
+const supportEl = () => h("footer", { class: "support" }, "Precisa de ajuda? Suporte: ", h("a", { href: "mailto:" + SUPPORT_EMAIL }, SUPPORT_EMAIL));

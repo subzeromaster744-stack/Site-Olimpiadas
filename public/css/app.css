@@ -201,3 +201,7 @@ a.plink{color:var(--title);font-weight:700;text-decoration:none;border-bottom:1p
 .modalbox{padding:22px 24px 24px;max-width:900px;width:100%}.modalbox h2{margin:0}
 .sentflag{font-size:11px;font-weight:600;color:#a0722a;margin-top:3px}.sentflag.yes{color:var(--ok)}
 tfoot td{background:var(--soft)}
+
+.support{max-width:1180px;margin:18px auto 4px;text-align:center;font-size:13px;color:rgba(255,255,255,.9);text-shadow:0 1px 3px rgba(0,30,60,.45)}
+.support a,.login a{color:inherit;font-weight:600}.login a{color:var(--accent)}
+@media print{.support{display:none}}

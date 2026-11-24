@@ -76,7 +76,7 @@ function start() {
 /* ---------- telas finais ---------- */
 function full(ico, title, text) {
   S.dead = true;
-  root.replaceChildren(h("div", { class: "card full" }, h("div", { class: "ico" }, ico), h("h1", {}, title), h("p", {}, text)));
+  root.replaceChildren(h("div", { class: "card full" }, h("div", { class: "ico" }, ico), h("h1", {}, title), h("p", {}, text)), supportEl());
 }
 function kicked() { full("⛔", "Você foi removido desta votação", "O organizador removeu seu acesso. Se acredita que foi um engano, fale com ele."); }
 
@@ -95,7 +95,7 @@ function render(keep) {
   const view = h("div", { class: "inner", id: "view" });
   view.append(S.step === "name" ? viewName() : S.step === "done" ? viewDone() : viewSection(S.step));
   root.replaceChildren(h("div", { class: "app" }, left,
-    h("main", { class: "card right" }, h("div", { class: "top" }, h("span", { id: "topL" }), h("span", { id: "topR", class: "conn" })), view)));
+    h("main", { class: "card right" }, h("div", { class: "top" }, h("span", { id: "topL" }), h("span", { id: "topR", class: "conn" })), view)), supportEl());
   renderTop();
   if (!keep) window.scrollTo({ top: 0, behavior: "smooth" });
 }
