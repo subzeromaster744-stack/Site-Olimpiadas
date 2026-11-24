@@ -95,7 +95,7 @@ function render(keep) {
   const view = h("div", { class: "inner", id: "view" });
   view.append(S.step === "name" ? viewName() : S.step === "done" ? viewDone() : viewSection(S.step));
   root.replaceChildren(h("div", { class: "app" }, left,
-    h("main", { class: "card right" }, h("div", { class: "top" }, h("span", { id: "topL" }), h("span", { id: "topR", class: "conn" })), view)), supportEl());
+    h("main", { class: "card right" }, h("div", { class: "top" }, h("span", { id: "topL" }), h("span", { id: "topR", class: "conn" })), view)));
   renderTop();
   if (!keep) window.scrollTo({ top: 0, behavior: "smooth" });
 }
@@ -185,7 +185,8 @@ function viewDone() {
     h("p", {}, `${S.poll.rodada} · ${S.poll.categoria}${S.poll.turno ? " · " + S.poll.turno : ""}`),
     h("p", {}, `Obrigado, ${S.name}. Suas notas foram registradas.`),
     S.conn !== "on" ? h("div", { class: "notice" }, "Você está sem conexão no momento. As notas serão enviadas assim que a internet voltar — mantenha esta página aberta.") : null,
-    h("p", { class: "small", style: "margin-top:16px" }, "As notas enviadas não podem ser alteradas."));
+    h("p", { class: "small", style: "margin-top:16px" }, "As notas enviadas não podem ser alteradas."),
+    h("p", { class: "small", style: "margin-top:22px" }, "Dúvidas ou problemas? Suporte: ", h("a", { href: "mailto:" + SUPPORT_EMAIL, style: "color:var(--accent);font-weight:600" }, SUPPORT_EMAIL)));
 }
 
 $("#lb").addEventListener("click", () => $("#lb").classList.remove("open"));
