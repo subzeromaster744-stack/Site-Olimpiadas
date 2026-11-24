@@ -46,6 +46,9 @@ export class Hub extends DurableObject {
          pid TEXT NOT NULL, poll_id TEXT NOT NULL, sec INTEGER NOT NULL, q INTEGER NOT NULL, value INTEGER NOT NULL,
          PRIMARY KEY (pid, sec, q))`);
     x(`CREATE INDEX IF NOT EXISTS idx_votes_poll ON votes(poll_id)`);
+    // migração: bancos criados antes da função "anular respostas" não têm a coluna
+    if (!this.q("PRAGMA table_info(participants)").some((c) => c.name === "annulled"))
+      x(`ALTER TABLE participants ADD COLUMN annulled INTEGER NOT NULL DEFAULT 0`);
     x(`CREATE TABLE IF NOT EXISTS docs (
          poll_id TEXT NOT NULL, sec INTEGER NOT NULL, name TEXT NOT NULL, size INTEGER NOT NULL, ver INTEGER NOT NULL,
          PRIMARY KEY (poll_id, sec))`);
@@ -95,7 +98,7 @@ export class Hub extends DurableObject {
     const total = JSON.parse(r.sections).length * JSON.parse(r.questions).length;
     const online = this.onlineMap(r.id, exclude);
     return this.q(
-      `SELECT p.id, p.name, p.joined_at, p.status,
+      `SELECT p.id, p.name, p.joined_at, p.status, p.annulled,
               (SELECT COUNT(*) FROM votes v WHERE v.pid = p.id) AS answered
          FROM participants p WHERE p.poll_id=? ORDER BY p.joined_at`, r.id,
     ).map((p) => ({ ...p, total, online: online.has(p.id) }));
@@ -106,11 +109,11 @@ export class Hub extends DurableObject {
     for (const c of this.q(
       `SELECT v.sec, v.q, AVG(v.value) AS avg, COUNT(*) AS n
          FROM votes v JOIN participants p ON p.id = v.pid
-        WHERE v.poll_id=? AND p.status='active' GROUP BY v.sec, v.q`, pollId,
+        WHERE v.poll_id=? AND p.status='active' AND p.annulled=0 GROUP BY v.sec, v.q`, pollId,
     )) cells[`${c.sec}_${c.q}`] = { avg: c.avg, n: c.n };
     const respondents = this.q(
       `SELECT COUNT(DISTINCT v.pid) AS n FROM votes v JOIN participants p ON p.id=v.pid
-        WHERE v.poll_id=? AND p.status='active'`, pollId)[0].n;
+        WHERE v.poll_id=? AND p.status='active' AND p.annulled=0`, pollId)[0].n;
     return { cells, respondents };
   }
 
@@ -306,14 +309,32 @@ export class Hub extends DurableObject {
       }
     }
 
-    if ((m = path.match(/^\/api\/polls\/([a-z0-9]+)\/participants\/([0-9a-f-]{36})\/(kick|unkick)$/)) && method === "POST") {
+    if ((m = path.match(/^\/api\/polls\/([a-z0-9]+)\/participants\/([0-9a-f-]{36})\/(kick|unkick|annul|restore)$/)) && method === "POST") {
       const [, id, pid, action] = m;
       const p = this.q("SELECT * FROM participants WHERE id=? AND poll_id=?", pid, id)[0];
       if (!p) return json({ error: "not_found" }, 404);
-      this.sql.exec("UPDATE participants SET status=? WHERE id=?", action === "kick" ? "kicked" : "active", pid);
+      if (action === "kick" || action === "unkick")
+        this.sql.exec("UPDATE participants SET status=? WHERE id=?", action === "kick" ? "kicked" : "active", pid);
+      else // anular: as notas ficam guardadas, mas não entram nos resultados; restaurar volta a contar
+        this.sql.exec("UPDATE participants SET annulled=? WHERE id=?", action === "annul" ? 1 : 0, pid);
       if (action === "kick") this.kickSockets(id, pid);
       this.pushLive(id);
       return json({ ok: true });
+    }
+
+    // apagar a pessoa da lista (e as respostas dela); o nome deixa de estar bloqueado
+    if ((m = path.match(/^\/api\/polls\/([a-z0-9]+)\/participants\/([0-9a-f-]{36})$/)) && method === "DELETE") {
+      const [, id, pid] = m;
+      if (!this.q("SELECT 1 AS x FROM participants WHERE id=? AND poll_id=?", pid, id).length) return json({ error: "not_found" }, 404);
+      this.deleteParticipants(id, [pid]);
+      return json({ ok: true });
+    }
+    if (path.match(/^\/api\/polls\/([a-z0-9]+)\/kicked$/) && method === "DELETE") {
+      const id = path.split("/")[3];
+      if (!this.pollRow(id)) return json({ error: "not_found" }, 404);
+      const ids = this.q("SELECT id FROM participants WHERE poll_id=? AND status='kicked'", id).map((r) => r.id);
+      this.deleteParticipants(id, ids);
+      return json({ ok: true, deleted: ids.length });
     }
 
     if ((m = path.match(/^\/api\/polls\/([a-z0-9]+)\/export\.csv$/)) && method === "GET") {
@@ -323,9 +344,9 @@ export class Hub extends DurableObject {
       const esc = (v) => `"${String(v).replace(/"/g, '""')}"`;
       const rows = [["votacao", "participante", "situacao", "secao", "titulo_secao", "pergunta", "nota"]];
       for (const v of this.q(
-        `SELECT p.name, p.status, v.sec, v.q, v.value FROM votes v JOIN participants p ON p.id=v.pid
+        `SELECT p.name, p.status, p.annulled, v.sec, v.q, v.value FROM votes v JOIN participants p ON p.id=v.pid
           WHERE v.poll_id=? ORDER BY p.joined_at, v.sec, v.q`, r.id))
-        rows.push([r.title, v.name, v.status === "kicked" ? "expulso" : "ativo", v.sec + 1, secs[v.sec]?.title ?? "", qs[v.q] ?? "", v.value]);
+        rows.push([r.title, v.name, v.status === "kicked" ? "expulso" : v.annulled ? "anulado" : "ativo", v.sec + 1, secs[v.sec]?.title ?? "", qs[v.q] ?? "", v.value]);
       return new Response("﻿" + rows.map((x) => x.map(esc).join(";")).join("\n"), {
         headers: { "content-type": "text/csv; charset=utf-8", "content-disposition": `attachment; filename="votos-${r.id}.csv"` },
       });
@@ -357,6 +378,19 @@ export class Hub extends DurableObject {
     this.sql.exec("INSERT INTO participants (id, poll_id, name, joined_at) VALUES (?,?,?,?)", id, pollId, name, Date.now());
     this.pushLive(pollId);
     return json({ token: id, name });
+  }
+
+  deleteParticipants(pollId, pids) {
+    for (const pid of pids) {
+      // se ainda estiver conectado, volta para a tela de nome (o token deixa de existir)
+      for (const ws of this.ctx.getWebSockets("p:" + pollId)) {
+        if (ws.deserializeAttachment()?.pid !== pid) continue;
+        try { ws.send(JSON.stringify({ t: "denied", reason: "removed" })); ws.close(4401, "removed"); } catch {}
+      }
+      this.sql.exec("DELETE FROM votes WHERE pid=?", pid);
+      this.sql.exec("DELETE FROM participants WHERE id=? AND poll_id=?", pid, pollId);
+    }
+    this.pushLive(pollId);
   }
 
   kickSockets(pollId, pid) {

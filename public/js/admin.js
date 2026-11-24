@@ -150,23 +150,44 @@ function tabLive(p) {
     w.append(h("div", { class: "empty" }, h("div", { style: "font-size:42px" }, "📲"), h("b", {}, "Ninguém entrou ainda"), h("div", { class: "small", style: "margin:6px 0 14px" }, "Mostre o QR Code para os participantes. Quem entrar aparece aqui na hora."),
       h("button", { class: "btn", type: "button", onclick: () => { A.tab = "qr"; renderTabs(); renderTab(); } }, "Ver QR Code")));
   } else {
-    w.append(h("p", { class: "small", style: "margin:0 0 10px" }, "Não reconhece alguém? Clique em Expulsar: a pessoa é desconectada na hora e perde o acesso."));
+    w.append(h("p", { class: "small", style: "margin:0 0 10px" }, "Não reconhece alguém? ", h("b", {}, "Expulsar"), " desconecta a pessoa e bloqueia o acesso. ", h("b", {}, "Anular respostas"), " mantém a pessoa, mas as notas dela deixam de contar (dá para restaurar)."));
     const tb = h("tbody", {});
     for (const x of active) {
-      tb.append(h("tr", {},
+      tb.append(h("tr", { class: x.annulled ? "annulled" : "" },
         h("td", {}, h("span", { class: "dot " + (x.online ? "on" : "") }), " ", x.online ? "Online" : "Offline"),
-        h("td", {}, h("b", {}, x.name)), h("td", {}, hhmm(x.joined_at)),
+        h("td", {}, h("b", {}, x.name), x.annulled ? h("span", { class: "chip closed", style: "margin-left:8px" }, "respostas anuladas") : null), h("td", {}, hhmm(x.joined_at)),
         h("td", { style: "min-width:140px" }, h("div", { class: "pbar" }, h("i", { style: `width:${Math.round((x.answered / x.total) * 100)}%` })), h("span", { class: "small" }, `${x.answered}/${x.total} respostas`)),
-        h("td", { class: "c" }, h("button", { class: "btn danger sm", type: "button", onclick: () => kick(p, x) }, "Expulsar"))));
+        h("td", { class: "c acts" },
+          x.annulled
+            ? h("button", { class: "btn ghost sm", type: "button", onclick: () => act(p, x, "restore") }, "Restaurar respostas")
+            : h("button", { class: "btn ghost sm", type: "button", onclick: () => annul(p, x) }, "Anular respostas"),
+          h("button", { class: "btn danger sm", type: "button", onclick: () => kick(p, x) }, "Expulsar"))));
     }
     w.append(h("div", { style: "overflow-x:auto" }, h("table", { class: "t" }, h("thead", {}, h("tr", {}, ["Situação", "Nome", "Entrou às", "Progresso", ""].map((c) => h("th", {}, c)))), tb)));
   }
   if (kicked.length) {
-    w.append(h("h3", { style: "margin:24px 0 8px;color:var(--err)" }, `Expulsos (${kicked.length})`),
+    w.append(h("div", { class: "head2", style: "margin:24px 0 8px;align-items:center" },
+        h("h3", { style: "margin:0;color:var(--err)" }, `Expulsos (${kicked.length})`),
+        h("button", { class: "btn danger sm", type: "button", onclick: () => deleteKicked(p, kicked) }, "🗑 Apagar todos")),
       h("table", { class: "t" }, h("tbody", {}, kicked.map((x) => h("tr", {}, h("td", {}, h("b", {}, x.name)), h("td", { class: "small" }, "Bloqueado nesta votação"),
-        h("td", { class: "c" }, h("button", { class: "btn ghost sm", type: "button", onclick: () => api(`/api/polls/${p.id}/participants/${x.id}/unkick`, { method: "POST" }) }, "Readmitir")))))));
+        h("td", { class: "c acts" },
+          h("button", { class: "btn ghost sm", type: "button", onclick: () => act(p, x, "unkick") }, "Readmitir"),
+          h("button", { class: "btn danger sm", type: "button", onclick: () => removeOne(p, x) }, "🗑 Apagar")))))));
   }
   return w;
+}
+const act = (p, x, action) => api(`/api/polls/${p.id}/participants/${x.id}/${action}`, { method: "POST" }).catch((e) => alert(e.message));
+function annul(p, x) {
+  if (!confirm(`Anular as respostas de “${x.name}”?\n\nAs notas ficam guardadas, mas deixam de contar nos resultados (inclusive as próximas). Você pode restaurar depois.`)) return;
+  act(p, x, "annul");
+}
+function removeOne(p, x) {
+  if (!confirm(`Apagar “${x.name}” da lista de expulsos?\n\nO nome deixa de ser bloqueado e as respostas dessa pessoa são apagadas de vez.`)) return;
+  api(`/api/polls/${p.id}/participants/${x.id}`, { method: "DELETE" }).catch((e) => alert(e.message));
+}
+function deleteKicked(p, list) {
+  if (!confirm(`Apagar todos os ${list.length} nomes da lista de expulsos?\n\nOs nomes deixam de ser bloqueados e as respostas dessas pessoas são apagadas de vez.`)) return;
+  api(`/api/polls/${p.id}/kicked`, { method: "DELETE" }).catch((e) => alert(e.message));
 }
 function kick(p, x) {
   if (!confirm(`Expulsar “${x.name}” desta votação?\n\nOs votos dessa pessoa deixam de contar e o nome fica bloqueado.`)) return;
@@ -182,7 +203,7 @@ function tabResults(p) {
     return h("td", { class: "c" }, h("b", {}, fmt(n ? s / n : 0)));
   }));
   return h("div", {},
-    h("div", { class: "head2" }, h("p", { class: "small", style: "margin:0" }, `${p.results.respondents} participante(s) com notas · atualiza sozinho · votos de expulsos não contam.`),
+    h("div", { class: "head2" }, h("p", { class: "small", style: "margin:0" }, `${p.results.respondents} participante(s) com notas · atualiza sozinho · votos de expulsos e de respostas anuladas não contam.`),
       h("button", { class: "btn ghost sm", type: "button", onclick: () => exportCsv(p) }, "⬇ Baixar CSV")),
     h("div", { style: "overflow-x:auto" }, h("table", { class: "t" }, h("thead", {}, head), body, h("tfoot", {}, foot))),
     p.sections.some((s) => s.title) ? h("p", { class: "small", style: "margin-top:12px" }, p.sections.map((s, i) => `Seção ${i + 1}: ${s.title || "—"}`).join("  ·  ")) : null);

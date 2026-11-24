@@ -161,3 +161,9 @@ label.btn{display:inline-block;margin:0}
 .pdfbadge{font-size:13px;color:var(--ink);background:#f2f8fc;border:1px solid #d6e8f4;border-radius:8px;padding:6px 10px}
 .figure .cap{display:flex;flex-direction:column;gap:12px;align-items:flex-start;justify-content:center}
 .pdfbtn{text-decoration:none;display:inline-block;font-size:14px;padding:8px 14px}
+
+/* ---------- anular / apagar ---------- */
+tr.annulled td{background:#fff6f5;color:#8a6a68}
+tr.annulled .pbar i{background:#d9a29d}
+td.acts{white-space:nowrap}td.acts .btn{margin-left:6px}
+@media (max-width:700px){td.acts{white-space:normal}}

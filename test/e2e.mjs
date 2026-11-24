@@ -93,6 +93,43 @@ ok(live.participants.find((p) => p.name === "Maria Silva").online === false, "ad
 const sm2 = sock(`${WS}/ws/p/${poll.id}?token=${maria.token}`); await sm2.opened; await sleep(300);
 ok(sm2.msgs[0].votes["0_0"] === 5 && sm2.msgs[0].votes["0_1"] === 3, "votos restaurados ao reconectar");
 
+// anular / restaurar respostas
+{
+  const lastLive = () => adm.msgs.filter((m) => m.t === "live" && m.poll === poll.id).at(-1);
+  const act = (pid, a) => J(`/api/polls/${poll.id}/participants/${pid}/${a}`, { method: "POST", headers: AH });
+  ok(lastLive().results.cells["0_0"]?.n === 2, "antes de anular: votos da Maria e do readmitido contam (n=2)");
+  x = await act(maria.token, "annul"); await sleep(300);
+  ok(x.r.status === 200 && lastLive().participants.find((p) => p.id === maria.token).annulled === 1, "anular marca a participante");
+  ok(lastLive().results.cells["0_0"]?.n === 1 && lastLive().results.cells["0_0"].avg === 1 && lastLive().results.respondents === 1, "respostas anuladas saem dos resultados (sobra só o outro voto)");
+  sm2.ws.send(JSON.stringify({ t: "vote", sec: 0, q: 4, value: 5 })); await sleep(300);
+  ok(!lastLive().results.cells["0_4"], "novos votos de quem está anulado também não contam");
+  ok(lastLive().participants.find((p) => p.id === maria.token).answered === 3, "as notas continuam guardadas (3)");
+  x = await act(maria.token, "restore"); await sleep(300);
+  ok(lastLive().results.cells["0_0"]?.n === 2 && lastLive().results.cells["0_4"]?.n === 1, "restaurar volta a contar tudo");
+}
+
+// apagar expulsos (um e todos) — migra de volta o nome para "livre"
+{
+  const lastLive = () => adm.msgs.filter((m) => m.t === "live" && m.poll === poll.id).at(-1);
+  const kickOf = (pid) => J(`/api/polls/${poll.id}/participants/${pid}/kick`, { method: "POST", headers: AH });
+  await kickOf(intruso.token); await sleep(200);
+  const alvo = sock(`${WS}/ws/p/${poll.id}?token=${intruso.token}`); await alvo.opened; await sleep(200);
+  x = await J(`/api/polls/${poll.id}/participants/${intruso.token}`, { method: "DELETE", headers: AH }); await sleep(300);
+  ok(x.r.status === 200 && !lastLive().participants.some((p) => p.id === intruso.token), "apagar tira o nome da lista");
+  x = await J(`/api/p/${poll.id}/join`, { method: "POST", body: JSON.stringify({ token: intruso.token }) });
+  ok(x.r.status === 400, "token apagado deixa de existir (pede o nome de novo)");
+  x = await J(`/api/p/${poll.id}/join`, { method: "POST", body: JSON.stringify({ name: "Intruso" }) });
+  ok(x.r.status === 200, "nome apagado da lista não está mais bloqueado");
+  const novo = x.b;
+  const outro = (await J(`/api/p/${poll.id}/join`, { method: "POST", body: JSON.stringify({ name: "Outro Intruso" }) })).b;
+  await kickOf(novo.token); await kickOf(outro.token); await sleep(200);
+  ok(lastLive().participants.filter((p) => p.status === "kicked").length === 2, "dois expulsos na lista");
+  x = await J(`/api/polls/${poll.id}/kicked`, { method: "DELETE", headers: AH }); await sleep(300);
+  ok(x.b.deleted === 2 && !lastLive().participants.some((p) => p.status === "kicked"), "apagar todos os expulsos");
+  x = await J(`/api/polls/${poll.id}/participants/${maria.token}`, { method: "DELETE", headers: { authorization: "Bearer " } });
+  ok(x.r.status === 401, "apagar sem login = 401");
+}
+
 // PDF (3,2 MB => 3 pedaços no banco)
 {
   const { createHash } = await import("node:crypto");
