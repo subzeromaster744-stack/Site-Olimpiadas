@@ -101,7 +101,7 @@ function render(keep) {
 }
 function renderTop() {
   const l = $("#topL"), r = $("#topR"); if (!l) return;
-  l.textContent = typeof S.step === "number" ? `Seção ${S.step + 1}` : S.step === "done" ? "Concluído" : "Identificação";
+  l.textContent = typeof S.step === "number" ? `Seção ${S.poll.sections[S.step]?.title || S.step + 1}` : S.step === "done" ? "Concluído" : "Identificação";
   r.className = "conn " + (S.step === "name" ? "" : S.conn);
   r.replaceChildren(h("i"), S.step === "name" ? "" : (S.name ? S.name + " · " : "") + (S.conn === "on" ? "ao vivo" : "reconectando…"));
 }
@@ -132,7 +132,7 @@ function viewSection(i) {
   const sec = S.poll.sections[i];
   const w = h("div", { class: closed() ? "locked" : "" });
   if (closed()) w.append(h("div", { class: "banner-closed" }, "Esta votação foi encerrada. Suas notas anteriores estão registradas, mas não é possível alterá-las."));
-  w.append(h("p", { class: "scale-note" }, "1 = muito fraco · 5 = excelente. Todas as perguntas são obrigatórias. ", h("b", {}, "Depois de enviar a seção, as notas não podem ser alteradas.")));
+  w.append(h("p", { class: "scale-note" }, "Todas as perguntas são obrigatórias. ", h("b", {}, "Depois de enviar a seção, as notas não podem ser alteradas.")));
   const img = sec.img
     ? h("button", { class: "img", type: "button", "aria-label": "Ampliar imagem", onclick: () => { $("#lb img").src = sec.img; $("#lb").classList.add("open"); } },
         h("img", { src: sec.img, alt: sec.title || `Seção ${i + 1}` }), h("span", { class: "zoom" }, "🔍 ampliar"))
@@ -146,7 +146,6 @@ function viewSection(i) {
     const miss = []; for (let j = 0; j < nQ(); j++) if (!getV(i, j)) miss.push(j);
     const qs = document.querySelectorAll(".q"); qs.forEach((el, j) => el.classList.toggle("err", miss.includes(j)));
     if (miss.length) { qs[miss[0]].scrollIntoView({ behavior: "smooth", block: "center" }); return; }
-    if (!confirm(`Enviar as notas desta seção?\n\nDepois de enviar não será possível voltar nem alterar.`)) return;
     S.sendErr = ""; S.pending = i;
     if (!S.sock?.send({ t: "submit", sec: i })) { S.pending = null; S.sendErr = "Sem conexão. Aguarde reconectar e tente de novo."; }
     else setTimeout(() => { if (S.pending === i) { S.pending = null; S.sendErr = "Não foi possível enviar agora. Tente novamente."; render(true); } }, 8000);
