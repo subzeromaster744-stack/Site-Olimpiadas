@@ -287,6 +287,49 @@ ok(csv.status === 200 && (await csv.text()).includes("Maria Silva"), "exportar C
   await J(`/api/polls/${tp.id}`, { method: "DELETE", headers: AH });
 }
 
+
+// ---------- pastas ----------
+{
+  const JH = { ...AH, "content-type": "application/json" };
+  const call = (path, method = "GET", body, h = JH) => J(path, { method, headers: h, ...(body ? { body: JSON.stringify(body) } : {}) });
+  const ps = [];
+  for (const t of ["Pasta-form 1", "Pasta-form 2"]) ps.push((await call("/api/polls", "POST", { title: t })).b);
+  const tag = Math.random().toString(36).slice(2, 6);
+  let r = await call("/api/folders", "POST", { name: "" }); ok(r.r.status === 400, "pasta sem nome recusada");
+  r = await call("/api/folders", "POST", { name: "Rodada 3 " + tag }); ok(r.r.status === 201 && r.b.id, "criar pasta");
+  const f1 = r.b.id;
+  r = await call("/api/folders", "POST", { name: "Segurança", parent: f1 }); const f2 = r.b.id; ok(r.r.status === 201, "criar subpasta");
+  r = await call("/api/folders", "POST", { name: "x", parent: "naoexiste" }); ok(r.r.status === 400, "pai inexistente recusado");
+  r = await call("/api/placement", "PUT", { poll: ps[0].id, folder: f2 }); ok(r.r.status === 200 && r.b.placement[ps[0].id] === f2, "colocar formulário na subpasta");
+  r = await call("/api/folders/" + f1, "PUT", { parent: f2 }); ok(r.r.status === 400, "pasta não vira filha da própria subpasta (ciclo)");
+  r = await call("/api/folders/" + f1, "PUT", { parent: f1 }); ok(r.r.status === 400, "pasta não vira filha de si mesma");
+  r = await call("/api/folders/" + f2, "PUT", { name: "Segurança 2" }); ok(r.b.folders.find((f) => f.id === f2).name === "Segurança 2", "renomear pasta");
+  // profundidade máxima
+  let parent = null, last = 0;
+  for (let i = 0; i < 8; i++) { const x = await call("/api/folders", "POST", { name: "n" + i, parent }); if (x.r.status !== 201) break; parent = x.b.id; last = i + 1; }
+  ok(last === 6, "limite de 6 níveis de pastas");
+  // outro usuário não vê nem mexe
+  const U = await J("/api/auth/register", { method: "POST", body: JSON.stringify({ username: "pasta_" + tag, password: "segredo1" }) });
+  const UH = { authorization: "Bearer " + U.b.token, "content-type": "application/json" };
+  r = await call("/api/folders", "GET", null, UH); ok(r.b.folders.length === 0, "outro usuário não vê as pastas");
+  r = await call("/api/folders/" + f1, "PUT", { name: "hack" }, UH); ok(r.r.status === 404, "outro usuário não renomeia pasta alheia");
+  r = await call("/api/folders/" + f1, "DELETE", null, UH); ok(r.r.status === 404, "outro usuário não exclui pasta alheia");
+  r = await call("/api/placement", "PUT", { poll: ps[1].id, folder: f1 }, UH); ok(r.r.status === 404, "outro usuário não move formulário alheio");
+  // ao vivo
+  const wf = sock(`${WS}/ws/admin?token=${(await J("/api/admin/login", { method: "POST", body: JSON.stringify({ password: "admin123" }) })).b.token}`); await wf.opened; await sleep(250);
+  ok(wf.msgs[0].t === "init" && wf.msgs[0].folders.length >= 2 && wf.msgs[0].placement[ps[0].id] === f2, "init traz pastas e posições");
+  await call("/api/placement", "PUT", { poll: ps[1].id, folder: f1 }); await sleep(250);
+  ok(wf.msgs.some((m) => m.t === "folders" && m.placement[ps[1].id] === f1), "mudança chega ao vivo");
+  // excluir pasta: conteúdo sobe um nível
+  r = await call("/api/folders/" + f2, "DELETE"); ok(r.r.status === 200 && r.b.placement[ps[0].id] === f1 && !r.b.folders.some((f) => f.id === f2), "excluir subpasta: formulário sobe para a pasta pai");
+  r = await call("/api/folders/" + f1, "DELETE"); ok(!r.b.placement[ps[0].id] && !r.b.placement[ps[1].id], "excluir pasta da raiz: formulários voltam para fora de pastas");
+  r = await call("/api/polls"); ok(ps.every((p) => r.b.some((x) => x.id === p.id)), "formulários não foram apagados junto com a pasta");
+  r = await call("/api/placement", "PUT", { poll: ps[0].id, folder: null }); ok(r.r.status === 200, "tirar de pasta (raiz) ok");
+  for (const f of r.b.folders) await call("/api/folders/" + f.id, "DELETE");
+  for (const p of ps) await call("/api/polls/" + p.id, "DELETE");
+  wf.ws.close();
+}
+
 // páginas
 for (const [p, s] of [["/", 200], ["/admin", 200], [`/v/${poll.id}`, 200]]) { const r = await fetch(BASE + p); ok(r.status === s, `GET ${p} = ${r.status}`); }
 

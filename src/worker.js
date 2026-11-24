@@ -85,7 +85,7 @@ export default {
     const toHub = p.startsWith("/api/") || p.startsWith("/ws/") || p.startsWith("/img/") || p.startsWith("/pdf/");
     if (toHub) {
       const me = await whoAmI(request, url, env);
-      if ((p.startsWith("/api/polls") || p === "/ws/admin") && !me.admin && !me.uid) return json({ error: "unauthorized" }, 401);
+      if ((p.startsWith("/api/polls") || p.startsWith("/api/folders") || p === "/api/placement" || p === "/ws/admin") && !me.admin && !me.uid) return json({ error: "unauthorized" }, 401);
       const headers = new Headers(request.headers);
       headers.delete("x-admin-ok"); headers.delete("x-owner");
       if (me.admin) headers.set("x-admin-ok", "1");

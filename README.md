@@ -48,6 +48,10 @@ Qualquer pessoa que abrir o link principal pode **criar uma conta** (usuário + 
 - **Respostas por pessoa:** no painel, clique no nome (ou em "Ver respostas") para ver as notas da pessoa e a soma por seção, ao vivo.
 - **Estilos:** em Configurar → "Estilo do formulário": Azul, Preto e dourado ou Personalizado (cor de destaque, fundo, cartões claros/escuros). O banner pode ser trocado por uma imagem (sua própria arte).
 
+## Pastas
+
+Na lista "Seus formulários" dá para criar **pastas** (e subpastas, até 6 níveis), arrastar formulários e pastas para dentro delas e recolher/expandir cada uma. No celular, use o menu ⋮ → "Mover para…". Cada organizador tem as próprias pastas (o administrador também). Excluir uma pasta não apaga nada: o conteúdo sobe um nível.
+
 ## Estrutura
 ```
 src/worker.js   entrada: login admin (HMAC), roteia API/WebSocket para o Durable Object, serve /public

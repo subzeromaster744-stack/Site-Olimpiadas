@@ -25,6 +25,7 @@ const MAX_IMAGE = 1_900_000; // bytes (limite de linha do SQLite do DO é 2 MB)
 const MAX_PARTICIPANTS = 3000;
 const MAX_PDF = 20 * 1024 * 1024; // PDF completo da seção (guardado em pedaços)
 const MAX_USERS = 1000;
+const MAX_FOLDERS = 300, MAX_DEPTH = 6;
 const HEX = /^#[0-9a-fA-F]{6}$/;
 // estilo da página de votação: "azul" (padrão), "ouro" (preto e dourado) ou "custom" (cores escolhidas)
 function cleanTheme(t) {
@@ -77,6 +78,11 @@ export class Hub extends DurableObject {
     x(`CREATE TABLE IF NOT EXISTS sent (
          pid TEXT NOT NULL, poll_id TEXT NOT NULL, sec INTEGER NOT NULL, at INTEGER NOT NULL,
          PRIMARY KEY (pid, sec))`);
+    // pastas do painel (por organizador; o administrador tem as dele) e onde cada formulário foi colocado
+    x(`CREATE TABLE IF NOT EXISTS folders (
+         id TEXT PRIMARY KEY, owner TEXT NOT NULL, name TEXT NOT NULL, parent TEXT, created_at INTEGER NOT NULL)`);
+    x(`CREATE TABLE IF NOT EXISTS placement (
+         owner TEXT NOT NULL, poll_id TEXT NOT NULL, folder_id TEXT NOT NULL, PRIMARY KEY (owner, poll_id))`);
     x(`CREATE TABLE IF NOT EXISTS users (
          id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
          salt TEXT NOT NULL, hash TEXT NOT NULL, created_at INTEGER NOT NULL)`);
@@ -189,6 +195,85 @@ export class Hub extends DurableObject {
     return { ...this.publicPoll(r, true), participants: this.participants(r, exclude), results: this.results(r.id) };
   }
 
+  /* ------------------------------ pastas ------------------------------ */
+  foldersState(owner) {
+    const folders = this.q("SELECT id, name, parent FROM folders WHERE owner=? ORDER BY name COLLATE NOCASE", owner);
+    const placement = {};
+    for (const r of this.q("SELECT poll_id, folder_id FROM placement WHERE owner=?", owner)) placement[r.poll_id] = r.folder_id;
+    return { folders, placement };
+  }
+  pushFolders(owner) {
+    const s = JSON.stringify({ t: "folders", ...this.foldersState(owner) });
+    for (const ws of this.ctx.getWebSockets(owner === "admin" ? "all" : "own:" + owner)) { try { ws.send(s); } catch {} }
+  }
+  depthOf(owner, id) { // quantos níveis de pasta existem de id até a raiz (a própria pasta conta 1)
+    let d = 0;
+    for (let cur = id; cur && d <= MAX_DEPTH + 1; d++) cur = this.q("SELECT parent FROM folders WHERE id=? AND owner=?", cur, owner)[0]?.parent ?? null;
+    return d;
+  }
+  subtreeHeight(owner, id) {
+    const kids = this.q("SELECT id FROM folders WHERE parent=? AND owner=?", id, owner);
+    return 1 + Math.max(0, ...kids.map((k) => this.subtreeHeight(owner, k.id)));
+  }
+  async folderRoutes(path, method, request, owner, mine) {
+    let m;
+    if (path === "/api/folders" && method === "GET") return json(this.foldersState(owner));
+    let b = {};
+    if (method !== "DELETE" && method !== "GET") { try { b = await request.json(); } catch { return json({ error: "bad_json" }, 400); } }
+    const parentOk = (parent, movingId) => {
+      if (parent == null) return true;
+      if (!this.q("SELECT 1 AS x FROM folders WHERE id=? AND owner=?", parent, owner).length) return false;
+      if (movingId) { // não pode virar filha de si mesma nem de uma descendente
+        for (let cur = parent, i = 0; cur && i < 50; i++) { if (cur === movingId) return false; cur = this.q("SELECT parent FROM folders WHERE id=?", cur)[0]?.parent ?? null; }
+      }
+      return this.depthOf(owner, parent) + (movingId ? this.subtreeHeight(owner, movingId) : 1) <= MAX_DEPTH;
+    };
+    if (path === "/api/folders" && method === "POST") {
+      const name = clean(b.name, 60); if (!name) return json({ error: "Dê um nome à pasta." }, 400);
+      const parent = b.parent || null;
+      if (this.q("SELECT COUNT(*) AS n FROM folders WHERE owner=?", owner)[0].n >= MAX_FOLDERS) return json({ error: "Limite de pastas atingido." }, 429);
+      if (!parentOk(parent, null)) return json({ error: "Não é possível criar a pasta aí (limite de níveis)." }, 400);
+      const id = rid(8);
+      this.sql.exec("INSERT INTO folders (id, owner, name, parent, created_at) VALUES (?,?,?,?,?)", id, owner, name, parent, Date.now());
+      this.pushFolders(owner);
+      return json({ id, ...this.foldersState(owner) }, 201);
+    }
+    if ((m = path.match(/^\/api\/folders\/([a-z0-9]+)$/))) {
+      const id = m[1];
+      const f = this.q("SELECT * FROM folders WHERE id=? AND owner=?", id, owner)[0];
+      if (!f) return json({ error: "not_found" }, 404);
+      if (method === "PUT") {
+        const name = b.name === undefined ? f.name : clean(b.name, 60);
+        if (!name) return json({ error: "Dê um nome à pasta." }, 400);
+        const parent = b.parent === undefined ? f.parent : (b.parent || null);
+        if (parent !== f.parent && !parentOk(parent, id)) return json({ error: "Não é possível mover a pasta para lá." }, 400);
+        this.sql.exec("UPDATE folders SET name=?, parent=? WHERE id=?", name, parent, id);
+        this.pushFolders(owner);
+        return json(this.foldersState(owner));
+      }
+      if (method === "DELETE") { // o conteúdo sobe um nível (nada é apagado além da pasta)
+        const up = f.parent || null;
+        this.sql.exec("UPDATE folders SET parent=? WHERE parent=? AND owner=?", up, id, owner);
+        if (up) this.sql.exec("UPDATE placement SET folder_id=? WHERE folder_id=? AND owner=?", up, id, owner);
+        else this.sql.exec("DELETE FROM placement WHERE folder_id=? AND owner=?", id, owner);
+        this.sql.exec("DELETE FROM folders WHERE id=?", id);
+        this.pushFolders(owner);
+        return json(this.foldersState(owner));
+      }
+    }
+    if (path === "/api/placement" && method === "PUT") {
+      const pid = String(b.poll || ""), folder = b.folder || null;
+      const r = this.pollRow(pid);
+      if (!r || !mine(r)) return json({ error: "not_found" }, 404);
+      if (folder && !this.q("SELECT 1 AS x FROM folders WHERE id=? AND owner=?", folder, owner).length) return json({ error: "not_found" }, 404);
+      if (folder) this.sql.exec("INSERT OR REPLACE INTO placement (owner, poll_id, folder_id) VALUES (?,?,?)", owner, pid, folder);
+      else this.sql.exec("DELETE FROM placement WHERE owner=? AND poll_id=?", owner, pid);
+      this.pushFolders(owner);
+      return json(this.foldersState(owner));
+    }
+    return null;
+  }
+
   // owner: dono do formulário. O administrador (tag "all") recebe tudo; cada organizador só o que é dele.
   toAdmins(msg, owner) {
     const s = JSON.stringify(msg);
@@ -289,6 +374,10 @@ export class Hub extends DurableObject {
 
     if (!admin && !uid) return json({ error: "unauthorized" }, 401);
     const mine = (r) => admin || r.owner === uid;
+    if (path.startsWith("/api/folders") || path === "/api/placement") {
+      const resp = await this.folderRoutes(path, method, request, admin ? "admin" : uid, mine);
+      if (resp) return resp;
+    }
 
     // qualquer rota de um formulário de outra pessoa responde como se ele não existisse
     if ((m = path.match(/^\/api\/polls\/([a-z0-9]+)(\/|$)/))) {
@@ -340,6 +429,7 @@ export class Hub extends DurableObject {
         for (const t of ["votes", "participants", "images", "sent"]) this.sql.exec(`DELETE FROM ${t} WHERE poll_id=?`, id);
         this.dropDoc(id);
         this.sql.exec("DELETE FROM polls WHERE id=?", id);
+        this.sql.exec("DELETE FROM placement WHERE poll_id=?", id);
         this.toAdmins({ t: "deleted", poll: id }, r.owner);
         return json({ ok: true });
       }
@@ -510,7 +600,7 @@ export class Hub extends DurableObject {
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
     this.ctx.acceptWebSocket(server, admin ? ["all"] : ["own:" + uid]);
-    server.send(JSON.stringify({ t: "init", polls: this.listPolls(admin, uid).map((r) => this.adminPoll(r)) }));
+    server.send(JSON.stringify({ t: "init", polls: this.listPolls(admin, uid).map((r) => this.adminPoll(r)), ...this.foldersState(admin ? "admin" : uid) }));
     return new Response(null, { status: 101, webSocket: client });
   }
 

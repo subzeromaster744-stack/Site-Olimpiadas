@@ -6,7 +6,7 @@ const DEF_Q = ["Solução do problema", "Impacto nos indicadores", "Simplicidade
 const TOKEN_KEY = "olp_admin";
 const USER_KEY = "olp_user";
 
-const A = { token: localStorage.getItem(TOKEN_KEY), user: (() => { try { return JSON.parse(localStorage.getItem(USER_KEY)); } catch { return null; } })(), polls: new Map(), sel: null, view: "poll", tab: "live", conn: "off", sock: null, loaded: false, flash: null, dupFrom: null };
+const A = { token: localStorage.getItem(TOKEN_KEY), user: (() => { try { return JSON.parse(localStorage.getItem(USER_KEY)); } catch { return null; } })(), polls: new Map(), folders: [], place: {}, sel: null, view: "poll", tab: "live", conn: "off", sock: null, loaded: false, flash: null, dupFrom: null };
 const root = $("#root");
 const fmt = (x) => (x ? x.toFixed(2).replace(".", ",") : "–");
 const hhmm = (t) => new Date(t).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
@@ -79,9 +79,10 @@ function connect() {
     onstatus: (s) => { A.conn = s; renderBar(); },
     onmessage: (m) => {
       if (m.t === "init") {
-        A.polls = new Map(m.polls.map((p) => [p.id, p])); A.loaded = true;
+        A.polls = new Map(m.polls.map((p) => [p.id, p])); A.loaded = true; A.folders = m.folders || []; A.place = m.placement || {};
         if (!A.sel || !A.polls.has(A.sel)) A.sel = m.polls[0]?.id || null;
         if (editing(A.sel)) { renderSide(); renderBar(); } else renderAll();
+      } else if (m.t === "folders") { A.folders = m.folders; A.place = m.placement; renderSide();
       } else if (m.t === "poll") {
         A.polls.set(m.poll.id, m.poll);
         if (editing(m.poll.id)) { renderSide(); renderBar(); } else renderAll();
@@ -117,19 +118,93 @@ function renderBar() {
       A.user ? h("span", { class: "who" }, "👤 " + A.user.name) : null,
       h("button", { class: "btn ghost sm", type: "button", onclick: logout }, "Sair")));
 }
+/* ---------- pastas (árvore na lateral) ---------- */
+const COLL_KEY = "olp_collapsed";
+const collapsed = (() => { try { return new Set(JSON.parse(localStorage.getItem(COLL_KEY) || "[]")); } catch { return new Set(); } })();
+const saveColl = () => { try { localStorage.setItem(COLL_KEY, JSON.stringify([...collapsed])); } catch {} };
+const byName = (a, b) => a.name.localeCompare(b.name, "pt-BR", { numeric: true, sensitivity: "base" });
+const kidsOf = (parent) => A.folders.filter((f) => (f.parent || null) === parent).sort(byName);
+const folderOfPoll = (p) => (A.folders.some((f) => f.id === A.place[p.id]) ? A.place[p.id] : null);
+const pollsIn = (fid) => [...A.polls.values()].filter((p) => folderOfPoll(p) === fid);
+const countIn = (fid) => pollsIn(fid).length + kidsOf(fid).reduce((n, f) => n + countIn(f.id), 0);
+const descendants = (id) => kidsOf(id).flatMap((f) => [f.id, ...descendants(f.id)]);
+let drag = null;
+
+const foldersApi = (path, method, body) => api(path, { method, ...(body ? { body: JSON.stringify(body) } : {}) }).catch((e) => { alert(e.message); });
+const newFolder = (parent) => { const name = prompt(parent ? "Nome da subpasta:" : "Nome da pasta:"); if (name?.trim()) foldersApi("/api/folders", "POST", { name, parent }).then(() => parent && (collapsed.delete(parent), saveColl())); };
+const renameFolder = (f) => { const name = prompt("Novo nome da pasta:", f.name); if (name?.trim() && name.trim() !== f.name) foldersApi(`/api/folders/${f.id}`, "PUT", { name }); };
+const deleteFolder = (f) => { if (confirm(`Excluir a pasta “${f.name}”?\n\nOs formulários e subpastas dentro dela NÃO são apagados: sobem um nível.`)) foldersApi(`/api/folders/${f.id}`, "DELETE"); };
+const movePoll = (pid, fid) => foldersApi("/api/placement", "PUT", { poll: pid, folder: fid }).then(() => fid && (collapsed.delete(fid), saveColl(), renderSide()));
+const moveFolder = (id, parent) => foldersApi(`/api/folders/${id}`, "PUT", { parent }).then(() => parent && (collapsed.delete(parent), saveColl(), renderSide()));
+const dropOn = (target) => { // target: id da pasta ou null (raiz)
+  if (!drag) return; const d = drag; drag = null; $("#side")?.classList.remove("dragging");
+  if (d.kind === "poll") movePoll(d.id, target); else if (d.id !== target) moveFolder(d.id, target);
+};
+
+function closeMenu() { $("#ctxmenu")?.remove(); }
+function openMenu(btn, items) {
+  closeMenu();
+  const r = btn.getBoundingClientRect();
+  const menu = h("div", { class: "ctxmenu", id: "ctxmenu", style: `top:${Math.min(r.bottom + 4, innerHeight - 20 - items.length * 40)}px;left:${Math.max(8, Math.min(r.right - 200, innerWidth - 208))}px` },
+    items.map(([label, fn, danger]) => h("button", { type: "button", class: danger ? "danger" : "", onclick: () => { closeMenu(); fn(); } }, label)));
+  document.body.append(menu);
+  setTimeout(() => addEventListener("click", closeMenu, { once: true }), 0);
+}
+function pickFolder(title, current, blocked, onPick) { // escolher a pasta de destino (também serve no celular, onde arrastar é ruim)
+  const walk = (parent, depth) => kidsOf(parent).flatMap((f) => [
+    h("button", { type: "button", class: "pickrow" + (current === f.id ? " cur" : ""), style: `padding-left:${12 + depth * 16}px`, disabled: blocked.has(f.id), onclick: () => { close(); onPick(f.id); } }, "📁 " + f.name),
+    ...walk(f.id, depth + 1)]);
+  const close = () => $("#pickmodal")?.remove();
+  document.body.append(h("div", { class: "modal", id: "pickmodal", onclick: (e) => e.target.id === "pickmodal" && close() },
+    h("div", { class: "card modalbox", style: "max-width:420px" },
+      h("div", { class: "head2", style: "align-items:center" }, h("h2", { style: "font-size:18px" }, title), h("button", { class: "btn ghost sm", type: "button", onclick: close }, "Cancelar")),
+      h("div", { class: "pickbox" },
+        h("button", { type: "button", class: "pickrow" + (!current ? " cur" : ""), onclick: () => { close(); onPick(null); } }, "🏠 Fora de pastas"),
+        ...walk(null, 0), A.folders.length ? null : h("p", { class: "small", style: "padding:8px 12px" }, "Você ainda não tem pastas. Crie uma em “📁 Nova pasta”.")))));
+}
+
 function renderSide() {
   const side = $("#side"); if (!side) return;
-  const ul = h("ul", { class: "plist" });
-  for (const p of A.polls.values()) {
+  const dots = (on) => h("span", { class: "dot " + (on ? "on" : "") });
+  const pollItem = (p, depth) => {
     const on = activeOf(p).filter((x) => x.online).length;
-    ul.append(h("li", {}, h("button", { type: "button", class: p.id === A.sel && A.view === "poll" ? "on" : "", onclick: () => { A.sel = p.id; A.view = "poll"; A.tab = "live"; renderAll(); } },
-      h("span", { class: "t" }, p.title),
-      h("span", { class: "m" }, h("span", { class: "dot " + (on ? "on" : "") }), `${on} online · ${activeOf(p).length} participantes`, p.status === "closed" ? h("span", { class: "chip closed" }, "encerrada") : null))));
-  }
+    const kebab = h("button", { type: "button", class: "kebab", title: "Mais opções", "aria-label": "Mais opções", onclick: (e) => { e.stopPropagation(); openMenu(kebab, [["📂 Mover para…", () => pickFolder("Mover formulário para…", folderOfPoll(p), new Set(), (fid) => movePoll(p.id, fid))]]); } }, "⋮");
+    return h("li", { class: "pit", draggable: "true", style: depth ? `margin-left:${depth * 16}px` : "",
+      ondragstart: (e) => { drag = { kind: "poll", id: p.id }; e.dataTransfer.setData("text/plain", p.id); e.dataTransfer.effectAllowed = "move"; side.classList.add("dragging"); },
+      ondragend: () => { drag = null; side.classList.remove("dragging"); },
+      ondragover: (e) => { if (drag) { e.preventDefault(); e.stopPropagation(); } },
+      ondrop: (e) => { e.preventDefault(); e.stopPropagation(); dropOn(folderOfPoll(p)); } },
+      h("button", { type: "button", class: p.id === A.sel && A.view === "poll" ? "on" : "", onclick: () => { A.sel = p.id; A.view = "poll"; A.tab = "live"; renderAll(); } },
+        h("span", { class: "t" }, p.title),
+        h("span", { class: "m" }, dots(on), `${on} online · ${activeOf(p).length} participantes`, p.status === "closed" ? h("span", { class: "chip closed" }, "encerrada") : null)), kebab);
+  };
+  const folderItems = (f, depth) => {
+    const open = !collapsed.has(f.id);
+    const kebab = h("button", { type: "button", class: "kebab", title: "Opções da pasta", "aria-label": "Opções da pasta", onclick: (e) => { e.stopPropagation(); openMenu(kebab, [
+      ["✎ Renomear", () => renameFolder(f)], ["📁 Nova subpasta", () => newFolder(f.id)],
+      ["📂 Mover para…", () => pickFolder("Mover pasta para…", f.parent || null, new Set([f.id, ...descendants(f.id)]), (pid) => moveFolder(f.id, pid))],
+      ["🗑 Excluir pasta", () => deleteFolder(f), true]]); } }, "⋮");
+    const row = h("li", { class: "frow", draggable: "true", style: depth ? `margin-left:${depth * 16}px` : "",
+      onclick: () => { open ? collapsed.add(f.id) : collapsed.delete(f.id); saveColl(); renderSide(); },
+      ondragstart: (e) => { drag = { kind: "folder", id: f.id }; e.dataTransfer.setData("text/plain", f.id); e.dataTransfer.effectAllowed = "move"; side.classList.add("dragging"); },
+      ondragend: () => { drag = null; side.classList.remove("dragging"); },
+      ondragover: (e) => { if (!drag || (drag.kind === "folder" && (drag.id === f.id || descendants(drag.id).includes(f.id)))) return; e.preventDefault(); e.stopPropagation(); row.classList.add("over"); },
+      ondragleave: () => row.classList.remove("over"),
+      ondrop: (e) => { e.preventDefault(); e.stopPropagation(); row.classList.remove("over"); dropOn(f.id); } },
+      h("span", { class: "caret" }, open ? "▾" : "▸"), h("span", { class: "ficon" }, open ? "📂" : "📁"), h("span", { class: "fname" }, f.name), h("span", { class: "fcount" }, String(countIn(f.id))), kebab);
+    return [row, ...(open ? [...kidsOf(f.id).flatMap((c) => folderItems(c, depth + 1)), ...pollsIn(f.id).map((p) => pollItem(p, depth + 1))] : [])];
+  };
+  const ul = h("ul", { class: "plist",
+    ondragover: (e) => { if (drag) e.preventDefault(); }, ondrop: (e) => { e.preventDefault(); dropOn(null); } },
+    kidsOf(null).flatMap((f) => folderItems(f, 0)), pollsIn(null).map((p) => pollItem(p, 0)));
   side.replaceChildren(
     h("button", { class: "btn", type: "button", style: "width:100%", onclick: () => { A.view = "new"; A.dupFrom = null; renderAll(); } }, "＋ Criar formulário"),
-    h("h3", { style: "margin-top:18px" }, "Seus formulários"),
-    A.loaded ? (A.polls.size ? ul : h("p", { class: "small" }, "Você ainda não criou nenhum.")) : h("p", { class: "small" }, "Carregando…"));
+    // durante o arraste, este cabeçalho vira a área "tirar da pasta" (mesma altura: nada pula de lugar)
+    h("div", { class: "sidehead", ondragover: (e) => { if (drag) { e.preventDefault(); e.currentTarget.classList.add("over"); } }, ondragleave: (e) => e.currentTarget.classList.remove("over"),
+      ondrop: (e) => { e.preventDefault(); e.currentTarget.classList.remove("over"); dropOn(null); } },
+      h("h3", {}, "Seus formulários"), h("button", { class: "btn ghost sm", type: "button", onclick: () => newFolder(null) }, "📁 Nova pasta"), h("span", { class: "rootmsg" }, "⬆ Solte aqui para tirar da pasta")),
+    A.loaded ? (A.polls.size || A.folders.length ? ul : h("p", { class: "small" }, "Você ainda não criou nenhum.")) : h("p", { class: "small" }, "Carregando…"),
+    A.loaded && A.polls.size > 1 && !A.folders.length ? h("p", { class: "small hintfold" }, "Dica: crie pastas e arraste os formulários para organizar (ou use ⋮ → Mover para…).") : null);
 }
 function renderMain() {
   const main = $("#main"); if (!main) return;
