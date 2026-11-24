@@ -456,8 +456,7 @@ function formView(p, opts = {}) {
     h("div", { class: "grid2" }, h("div", {}, h("label", { class: "lbl sm" }, "Texto grande"), bigIn), h("div", {}, h("label", { class: "lbl sm" }, "Texto pequeno"), subIn)),
     h("div", { style: "display:flex;gap:10px;margin-top:8px;flex-wrap:wrap" },
       h("label", { class: "btn ghost sm", for: "bfile" }, "🖼 Usar uma imagem"), bfile,
-      h("button", { class: "btn ghost sm", type: "button", onclick: () => { bn.file = null; bn.removed = true; drawBanner(); } }, "Voltar ao banner de texto"),
-      h("button", { class: "btn ghost sm", type: "button", onclick: () => { v.bannerBig = bigIn.value = "10"; v.bannerSub = subIn.value = "Anos · Olimpíadas"; drawBanner(); } }, "Restaurar padrão")));
+      h("button", { class: "btn ghost sm", type: "button", onclick: () => { bn.file = null; bn.removed = true; drawBanner(); } }, "Voltar ao banner de texto")));
   drawBanner();
   const b1 = h("div", { class: "block" },
     h("div", { class: "field" }, h("label", { class: "lbl" }, "Rodada"), chips(RODADAS, () => v.rodada, (r) => (v.rodada = r), upd)),
