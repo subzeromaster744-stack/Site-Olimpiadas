@@ -23,6 +23,8 @@ const DEFAULT_QUESTIONS = [
 ];
 const MAX_IMAGE = 1_900_000; // bytes (limite de linha do SQLite do DO é 2 MB)
 const MAX_PARTICIPANTS = 3000;
+const MAX_PDF = 20 * 1024 * 1024; // PDF completo da seção (guardado em pedaços)
+const CHUNK = 1_500_000;           // cada linha do SQLite do DO aceita até 2 MB
 
 export class Hub extends DurableObject {
   constructor(ctx, env) {
@@ -44,6 +46,17 @@ export class Hub extends DurableObject {
          pid TEXT NOT NULL, poll_id TEXT NOT NULL, sec INTEGER NOT NULL, q INTEGER NOT NULL, value INTEGER NOT NULL,
          PRIMARY KEY (pid, sec, q))`);
     x(`CREATE INDEX IF NOT EXISTS idx_votes_poll ON votes(poll_id)`);
+    x(`CREATE TABLE IF NOT EXISTS docs (
+         poll_id TEXT NOT NULL, sec INTEGER NOT NULL, name TEXT NOT NULL, size INTEGER NOT NULL, ver INTEGER NOT NULL,
+         PRIMARY KEY (poll_id, sec))`);
+    x(`CREATE TABLE IF NOT EXISTS doc_chunks (
+         poll_id TEXT NOT NULL, sec INTEGER NOT NULL, idx INTEGER NOT NULL, data BLOB NOT NULL,
+         PRIMARY KEY (poll_id, sec, idx))`);
+  }
+
+  dropDoc(pollId, minSec = 0) {
+    this.sql.exec("DELETE FROM doc_chunks WHERE poll_id=? AND sec>=?", pollId, minSec);
+    this.sql.exec("DELETE FROM docs WHERE poll_id=? AND sec>=?", pollId, minSec);
   }
 
   /* ------------------------------ helpers ------------------------------ */
@@ -53,9 +66,14 @@ export class Hub extends DurableObject {
   publicPoll(r) {
     const vers = {};
     for (const i of this.q("SELECT sec, ver FROM images WHERE poll_id=?", r.id)) vers[i.sec] = i.ver;
+    const docs = {};
+    for (const d of this.q("SELECT sec, name, size, ver FROM docs WHERE poll_id=?", r.id)) docs[d.sec] = d;
     const sections = JSON.parse(r.sections).map((s, i) => ({
       title: s.title,
       img: vers[i] != null ? `/img/${r.id}/${i}?v=${vers[i]}` : null,
+      pdf: docs[i] ? `/pdf/${r.id}/${i}?v=${docs[i].ver}` : null,
+      pdfName: docs[i]?.name ?? null,
+      pdfSize: docs[i]?.size ?? null,
     }));
     return {
       id: r.id, rodada: r.rodada, categoria: r.categoria, turno: r.turno, title: r.title,
@@ -124,7 +142,7 @@ export class Hub extends DurableObject {
   }
 
   parsePoll(b) {
-    const rodada = clean(b.rodada, 30) || "1ª Rodada";
+    const rodada = clean(b.rodada, 30) || "1° Rodada";
     const categoria = clean(b.categoria, 40) || "Geral";
     const turno = clean(b.turno, 30);
     let sections = Array.isArray(b.sections)
@@ -156,6 +174,30 @@ export class Hub extends DurableObject {
       if (!img) return new Response("not found", { status: 404 });
       return new Response(img.data, {
         headers: { "content-type": img.mime, "cache-control": "public, max-age=31536000, immutable" },
+      });
+    }
+
+    if ((m = path.match(/^\/pdf\/([a-z0-9]+)\/(\d+)$/))) {
+      const pollId = m[1], sec = Number(m[2]);
+      const doc = this.q("SELECT name, size FROM docs WHERE poll_id=? AND sec=?", pollId, sec)[0];
+      if (!doc) return new Response("not found", { status: 404 });
+      const ids = this.q("SELECT idx FROM doc_chunks WHERE poll_id=? AND sec=? ORDER BY idx", pollId, sec).map((r) => r.idx);
+      let n = 0;
+      const body = new ReadableStream({
+        pull: (ctrl) => {
+          if (n >= ids.length) return ctrl.close();
+          const row = this.q("SELECT data FROM doc_chunks WHERE poll_id=? AND sec=? AND idx=?", pollId, sec, ids[n++])[0];
+          ctrl.enqueue(new Uint8Array(row.data));
+        },
+      });
+      return new Response(body, {
+        headers: {
+          "content-type": "application/pdf",
+          "content-length": String(doc.size),
+          "content-disposition": `inline; filename*=UTF-8''${encodeURIComponent(doc.name)}`,
+          "x-content-type-options": "nosniff",
+          "cache-control": "public, max-age=31536000, immutable",
+        },
       });
     }
 
@@ -198,6 +240,7 @@ export class Hub extends DurableObject {
           d.rodada, d.categoria, d.turno, d.title, status, JSON.stringify(d.sections), JSON.stringify(d.questions), id);
         this.sql.exec("DELETE FROM votes WHERE poll_id=? AND (sec>=? OR q>=?)", id, d.sections.length, d.questions.length);
         this.sql.exec("DELETE FROM images WHERE poll_id=? AND sec>=?", id, d.sections.length);
+        this.dropDoc(id, d.sections.length);
         this.pushPoll(id);
         return json({ ok: true });
       }
@@ -205,6 +248,7 @@ export class Hub extends DurableObject {
         this.toVoters(id, { t: "denied", reason: "deleted" });
         for (const ws of this.ctx.getWebSockets("p:" + id)) { try { ws.close(4404, "deleted"); } catch {} }
         for (const t of ["votes", "participants", "images"]) this.sql.exec(`DELETE FROM ${t} WHERE poll_id=?`, id);
+        this.dropDoc(id);
         this.sql.exec("DELETE FROM polls WHERE id=?", id);
         this.toAdmins({ t: "deleted", poll: id });
         return json({ ok: true });
@@ -227,6 +271,36 @@ export class Hub extends DurableObject {
       }
       if (method === "DELETE") {
         this.sql.exec("DELETE FROM images WHERE poll_id=? AND sec=?", id, sec);
+        this.pushPoll(id);
+        return json({ ok: true });
+      }
+    }
+
+    if ((m = path.match(/^\/api\/polls\/([a-z0-9]+)\/pdf\/(\d+)$/))) {
+      const id = m[1], sec = Number(m[2]);
+      const r = this.pollRow(id);
+      if (!r) return json({ error: "not_found" }, 404);
+      if (sec >= JSON.parse(r.sections).length) return json({ error: "bad_section" }, 400);
+      if (method === "PUT") {
+        const buf = new Uint8Array(await request.arrayBuffer());
+        if (!buf.byteLength || buf.byteLength > MAX_PDF) return json({ error: "PDF vazio ou maior que 20 MB." }, 413);
+        if (String.fromCharCode(...buf.subarray(0, 5)) !== "%PDF-") return json({ error: "O arquivo não é um PDF válido." }, 415);
+        let name = "documento.pdf";
+        try { name = clean(decodeURIComponent(request.headers.get("x-filename") || ""), 120) || name; } catch {}
+        const ver = Date.now();
+        this.ctx.storage.transactionSync(() => {
+          this.sql.exec("DELETE FROM doc_chunks WHERE poll_id=? AND sec=?", id, sec);
+          this.sql.exec("DELETE FROM docs WHERE poll_id=? AND sec=?", id, sec);
+          for (let i = 0, off = 0; off < buf.byteLength; i++, off += CHUNK)
+            this.sql.exec("INSERT INTO doc_chunks (poll_id, sec, idx, data) VALUES (?,?,?,?)", id, sec, i, buf.slice(off, off + CHUNK));
+          this.sql.exec("INSERT INTO docs (poll_id, sec, name, size, ver) VALUES (?,?,?,?,?)", id, sec, name, buf.byteLength, ver);
+        });
+        this.pushPoll(id);
+        return json({ ok: true });
+      }
+      if (method === "DELETE") {
+        this.sql.exec("DELETE FROM doc_chunks WHERE poll_id=? AND sec=?", id, sec);
+        this.sql.exec("DELETE FROM docs WHERE poll_id=? AND sec=?", id, sec);
         this.pushPoll(id);
         return json({ ok: true });
       }

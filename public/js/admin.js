@@ -1,7 +1,7 @@
 /* Painel do organizador (link principal "/"): cria votações, mostra QR, acompanha ao vivo e expulsa. */
-const RODADAS = ["1ª Rodada", "2ª Rodada", "3ª Rodada", "4ª Rodada"];
-const TURNOS = ["1º Turno", "2º Turno", "3º Turno"];
-const CATS = ["Segurança", "Qualidade", "Produtividade"];
+const RODADAS = ["1° Rodada", "2° Rodada", "3° Rodada", "Final"];
+const TURNOS = ["1° Turno", "2° Turno", "3° Turno"];
+const CATS = ["Segurança", "Quick Kaizen", "Standard Kaizen"];
 const DEF_Q = ["Solução do problema", "Impacto nos indicadores", "Criatividade / inovação", "Facilidade de replicação", "Custo-benefício", "Clareza do relatório"];
 const TOKEN_KEY = "olp_admin";
 
@@ -259,12 +259,43 @@ function chips(items, get, set, after) {
   const draw = () => box.replaceChildren(...items.map((i) => h("button", { type: "button", role: "radio", "aria-checked": String(get() === i), class: "chipbtn" + (get() === i ? " on" : ""), onclick: () => { set(i); draw(); after?.(); } }, i)));
   draw(); box.redraw = draw; return box;
 }
+const fmtSize = (n) => (!n ? "" : n >= 1048576 ? (n / 1048576).toFixed(1).replace(".", ",") + " MB" : Math.max(1, Math.round(n / 1024)) + " KB");
+
+/* PDF → imagem da 1ª página (pdf.js carregado só quando preciso) */
+let pdfjsReady;
+function loadPdfjs() {
+  return (pdfjsReady ||= new Promise((res, rej) => {
+    const s = document.createElement("script"); s.src = "/vendor/pdf.min.js";
+    s.onload = () => { window.pdfjsLib.GlobalWorkerOptions.workerSrc = "/vendor/pdf.worker.min.js"; res(window.pdfjsLib); };
+    s.onerror = () => { pdfjsReady = null; rej(new Error("Não foi possível carregar o leitor de PDF.")); };
+    document.head.append(s);
+  }));
+}
+async function pdfToImage(file) {
+  const lib = await loadPdfjs();
+  let doc;
+  try { doc = await lib.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise; }
+  catch { throw new Error("Não foi possível ler este PDF (protegido por senha ou corrompido)."); }
+  const page = await doc.getPage(1), base = page.getViewport({ scale: 1 });
+  let width = 1600, q = 0.85;
+  for (let t = 0; t < 12; t++) {
+    const vp = page.getViewport({ scale: Math.min(4, width / base.width) });
+    const c = document.createElement("canvas"); c.width = Math.round(vp.width); c.height = Math.round(vp.height);
+    const x = c.getContext("2d"); x.fillStyle = "#fff"; x.fillRect(0, 0, c.width, c.height);
+    await page.render({ canvasContext: x, viewport: vp }).promise;
+    const blob = await new Promise((r) => c.toBlob(r, "image/jpeg", q));
+    if (blob.size < 1_500_000) return { blob, pages: doc.numPages };
+    if (q > 0.55) q -= 0.1; else width = Math.round(width * 0.8);
+  }
+  throw new Error("Não foi possível gerar a prévia do PDF.");
+}
 const configTab = (p) => formView(p);
 
 function formView(p, opts = {}) {
   const edit = !!p, base = p || opts.from || null, dup = !edit && !!opts.from;
   const v = { rodada: base?.rodada || RODADAS[0], categoria: base?.categoria || CATS[0], turno: base?.turno ?? TURNOS[0], title: edit ? p.title : "" };
-  const drafts = (base?.sections || Array.from({ length: 4 }, () => ({ title: "", img: null }))).map((s) => ({ title: s.title, img: s.img, file: null, removed: false }));
+  const mkDraft = (s) => ({ title: s?.title || "", img: s?.img || null, file: null, removed: false, pdf: null, pdfUrl: s?.pdf || null, pdfName: s?.pdfName || null, pdfSize: s?.pdfSize || null, pdfPages: null, pdfRemoved: false });
+  const drafts = (base?.sections || Array.from({ length: 4 }, () => null)).map(mkDraft);
   const qs = h("textarea", { rows: "8", placeholder: "Uma pergunta por linha" }); qs.value = (base?.questions || DEF_Q).join("\n");
 
   /* bloco 1: dados */
@@ -287,20 +318,40 @@ function formView(p, opts = {}) {
   const list = h("div", {});
   const drawSecs = () => list.replaceChildren(...drafts.map((d, i) => {
     const t = h("input", { type: "text", maxlength: "120", placeholder: "Nome do projeto (ex.: Usinagem de Eixos A)", value: d.title }); t.addEventListener("input", () => (d.title = t.value));
-    const pv = h("div", { class: "thumb" });
-    const showPv = () => { pv.replaceChildren(); const src = d.file ? URL.createObjectURL(d.file) : d.removed ? null : d.img; pv.append(src ? h("img", { src, alt: "" }) : h("span", {}, "Sem imagem")); };
-    const f = h("input", { type: "file", accept: "image/*", id: `f${i}`, class: "hidden" });
-    f.addEventListener("change", async () => { if (!f.files[0]) return; try { d.file = await resizeImage(f.files[0]); d.removed = false; showPv(); } catch (e) { alert(e.message); } });
+    const pv = h("div", { class: "thumb" }), badge = h("div", { class: "pdfbadge" });
+    const showPv = () => {
+      pv.replaceChildren(); const src = d.file ? URL.createObjectURL(d.file) : d.removed ? null : d.img;
+      pv.append(src ? h("img", { src, alt: "" }) : h("span", {}, "Sem imagem"));
+      const hasPdf = d.pdf || (d.pdfUrl && !d.pdfRemoved);
+      badge.replaceChildren(); badge.classList.toggle("hidden", !hasPdf);
+      if (hasPdf) badge.append("📄 ", h("b", {}, d.pdf ? d.pdf.name : d.pdfName || "documento.pdf"), ` · ${fmtSize(d.pdf ? d.pdf.size : d.pdfSize)}`, d.pdfPages ? ` · ${d.pdfPages} pág.` : "", h("span", { class: "small" }, " — o participante vê a 1ª página e pode abrir o PDF completo"));
+    };
+    const f = h("input", { type: "file", accept: "image/*,application/pdf,.pdf", id: `f${i}`, class: "hidden" });
+    f.addEventListener("change", async () => {
+      const file = f.files[0]; if (!file) return;
+      try {
+        if (file.type === "application/pdf" || /\.pdf$/i.test(file.name)) {
+          if (file.size > 20 * 1024 * 1024) throw new Error("O PDF tem mais de 20 MB.");
+          pv.replaceChildren(h("span", {}, "Gerando prévia…"));
+          const { blob, pages } = await pdfToImage(file);
+          d.file = blob; d.pdf = file; d.pdfPages = pages; d.pdfRemoved = false; d.removed = false;
+        } else {
+          d.file = await resizeImage(file); d.removed = false;
+          d.pdf = null; d.pdfPages = null; if (d.pdfUrl) d.pdfRemoved = true;   // trocar por imagem comum tira o PDF antigo
+        }
+      } catch (e) { alert(e.message); }
+      f.value = ""; showPv();
+    });
     showPv();
     return h("div", { class: "secrow" }, h("div", { class: "secnum" }, String(i + 1)),
-      h("div", { class: "secbody" }, t, h("div", { class: "r" }, h("label", { class: "btn ghost sm", for: `f${i}` }, "📷 Escolher imagem"), f,
-        h("button", { class: "btn ghost sm", type: "button", onclick: () => { d.file = null; d.removed = true; f.value = ""; showPv(); } }, "Remover")), ),
+      h("div", { class: "secbody" }, t, h("div", { class: "r" }, h("label", { class: "btn ghost sm", for: `f${i}` }, "📎 Imagem ou PDF"), f,
+        h("button", { class: "btn ghost sm", type: "button", onclick: () => { d.file = null; d.removed = true; d.pdf = null; d.pdfPages = null; if (d.pdfUrl) d.pdfRemoved = true; f.value = ""; showPv(); } }, "Remover")), badge),
       pv);
   }));
   drawSecs();
   const b2 = h("div", { class: "block" }, h("p", { class: "hint", style: "margin-top:0" }, "Cada seção aparece como uma página para o participante, começando pela imagem do projeto."), list,
     h("div", { class: "r", style: "display:flex;gap:10px;margin-top:6px" },
-      h("button", { class: "btn ghost sm", type: "button", onclick: () => { if (drafts.length < 12) { drafts.push({ title: "", img: null, file: null, removed: false }); drawSecs(); } } }, "＋ Adicionar seção"),
+      h("button", { class: "btn ghost sm", type: "button", onclick: () => { if (drafts.length < 12) { drafts.push(mkDraft(null)); drawSecs(); } } }, "＋ Adicionar seção"),
       h("button", { class: "btn ghost sm", type: "button", onclick: () => { if (drafts.length > 1 && confirm("Remover a última seção? Os votos dela serão apagados ao salvar.")) { drafts.pop(); drawSecs(); } } }, "− Remover última")));
 
   /* bloco 3: perguntas */
@@ -320,9 +371,20 @@ function formView(p, opts = {}) {
         if (d.file) await put(d.file);
         else if (d.removed && d.img && edit) await api(`/api/polls/${poll.id}/image/${i}`, { method: "DELETE" });
         else if (dup && d.img && !d.removed) await put(await (await fetch(d.img)).blob());
+        const putPdf = (blob, name) => api(`/api/polls/${poll.id}/pdf/${i}`, { method: "PUT", body: blob, headers: { "content-type": "application/pdf", "x-filename": encodeURIComponent(name) } });
+        if (d.pdf) await putPdf(d.pdf, d.pdf.name);
+        else if (d.pdfRemoved && d.pdfUrl && edit) await api(`/api/polls/${poll.id}/pdf/${i}`, { method: "DELETE" });
+        else if (dup && d.pdfUrl && !d.pdfRemoved) await putPdf(await (await fetch(d.pdfUrl)).blob(), d.pdfName || "documento.pdf");
       }
       A.sel = poll.id; A.view = "poll";
-      if (edit) { A.tab = "config"; const bt = $("#savedmsg"); btn.disabled = false; btn.textContent = label; if (bt) { bt.textContent = "✓ Alterações salvas"; setTimeout(() => (bt.textContent = ""), 2500); } renderHead(); renderSide(); }
+      if (edit) {
+        // o formulário continua aberto: marca o que já foi salvo para não reenviar nem perder a prévia
+        for (const d of drafts) {
+          if (d.file) { d.img = URL.createObjectURL(d.file); d.file = null; } else if (d.removed) { d.img = null; d.removed = false; }
+          if (d.pdf) { d.pdfUrl = "salvo"; d.pdfName = d.pdf.name; d.pdfSize = d.pdf.size; d.pdf = null; } else if (d.pdfRemoved) { d.pdfUrl = null; d.pdfRemoved = false; }
+        }
+        drawSecs();
+        A.tab = "config"; const bt = $("#savedmsg"); btn.disabled = false; btn.textContent = label; if (bt) { bt.textContent = "✓ Alterações salvas"; setTimeout(() => (bt.textContent = ""), 2500); } renderHead(); renderSide(); }
       else { A.tab = "qr"; A.flash = "created"; renderAll(); }
     } catch (e) { err.textContent = e.message; btn.disabled = false; btn.textContent = label; }
   };

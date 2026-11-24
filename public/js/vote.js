@@ -122,8 +122,9 @@ function viewSection(i) {
   const img = sec.img
     ? h("button", { class: "img", type: "button", "aria-label": "Ampliar imagem", onclick: () => { $("#lb img").src = sec.img; $("#lb").classList.add("open"); } },
         h("img", { src: sec.img, alt: sec.title || `Seção ${i + 1}` }), h("span", { class: "zoom" }, "🔍 ampliar"))
-    : h("div", { class: "img ph" }, "Sem imagem nesta seção");
-  w.append(h("div", { class: "figure" }, h("div", { class: "cap" }, sec.title || `Seção ${i + 1}`), img));
+    : h("div", { class: "img ph" }, sec.pdf ? "Relatório em PDF — toque em “Abrir PDF completo”" : "Sem imagem nesta seção");
+  const pdfBtn = sec.pdf ? h("a", { class: "btn ghost sm pdfbtn", href: sec.pdf, target: "_blank", rel: "noopener" }, "📄 Abrir PDF completo") : null;
+  w.append(h("div", { class: "figure" }, h("div", { class: "cap" }, h("div", {}, sec.title || `Seção ${i + 1}`), pdfBtn), img));
   S.poll.questions.forEach((q, j) => w.append(question(i, j, q)));
   const last = i === nSec() - 1;
   w.append(h("div", { class: "nav" },

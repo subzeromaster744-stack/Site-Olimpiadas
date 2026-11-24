@@ -93,6 +93,41 @@ ok(live.participants.find((p) => p.name === "Maria Silva").online === false, "ad
 const sm2 = sock(`${WS}/ws/p/${poll.id}?token=${maria.token}`); await sm2.opened; await sleep(300);
 ok(sm2.msgs[0].votes["0_0"] === 5 && sm2.msgs[0].votes["0_1"] === 3, "votos restaurados ao reconectar");
 
+// PDF (3,2 MB => 3 pedaços no banco)
+{
+  const { createHash } = await import("node:crypto");
+  const pdf = new Uint8Array(3_200_000); pdf.set(new TextEncoder().encode("%PDF-1.4\n"));
+  for (let i = 9; i < pdf.length; i++) pdf[i] = (i * 31) & 0xff;
+  const sha = (b) => createHash("sha256").update(b).digest("hex");
+  const PH = { authorization: "Bearer " + T, "content-type": "application/pdf", "x-filename": encodeURIComponent("Relatório Ação.pdf") };
+  x = await J(`/api/polls/${poll.id}/pdf/1`, { method: "PUT", headers: PH, body: pdf });
+  ok(x.r.status === 200, "upload de PDF de 3,2 MB");
+  x = await J(`/api/p/${poll.id}`);
+  ok(x.b.sections[1].pdf?.startsWith(`/pdf/${poll.id}/1?v=`) && x.b.sections[1].pdfName === "Relatório Ação.pdf" && x.b.sections[1].pdfSize === pdf.length, "poll público expõe pdf, nome e tamanho");
+  ok(x.b.sections[0].pdf === null, "seção sem PDF fica nula");
+  const got = await fetch(BASE + x.b.sections[1].pdf);
+  const bytes = new Uint8Array(await got.arrayBuffer());
+  ok(got.status === 200 && got.headers.get("content-type") === "application/pdf" && bytes.length === pdf.length && sha(bytes) === sha(pdf), "PDF baixado é idêntico ao enviado (sha256)");
+  ok((got.headers.get("content-disposition") || "").includes("inline"), "PDF abre inline no navegador");
+  x = await J(`/api/polls/${poll.id}/pdf/1`, { method: "PUT", headers: { ...PH }, body: new TextEncoder().encode("isto nao e pdf") });
+  ok(x.r.status === 415, "arquivo que não é PDF é recusado");
+  x = await J(`/api/polls/${poll.id}/pdf/1`, { method: "PUT", headers: { authorization: "Bearer " + T, "content-type": "application/pdf" }, body: new Uint8Array(21 * 1024 * 1024) });
+  ok(x.r.status === 413, "PDF acima de 20 MB é recusado");
+  x = await J(`/api/polls/${poll.id}/pdf/1`, { method: "PUT", headers: { "content-type": "application/pdf" }, body: pdf });
+  ok(x.r.status === 401, "upload de PDF sem login = 401");
+  const pdf2 = pdf.slice(0, 1000); // substituir por um menor remove os pedaços antigos
+  x = await J(`/api/polls/${poll.id}/pdf/1`, { method: "PUT", headers: PH, body: pdf2 });
+  const got2 = new Uint8Array(await (await fetch(BASE + (await J(`/api/p/${poll.id}`)).b.sections[1].pdf)).arrayBuffer());
+  ok(got2.length === 1000, "substituir PDF troca o conteúdo");
+  x = await J(`/api/polls/${poll.id}/pdf/1`, { method: "DELETE", headers: AH });
+  x = await J(`/api/p/${poll.id}`);
+  ok(x.b.sections[1].pdf === null, "remover PDF");
+  await J(`/api/polls/${poll.id}/pdf/3`, { method: "PUT", headers: PH, body: pdf2 });
+  await J(`/api/polls/${poll.id}`, { method: "PUT", headers: AH, body: JSON.stringify({ sections: [{ title: "a" }, { title: "b" }] }) });
+  x = await J(`/api/p/${poll.id}`);
+  ok(x.b.sections.length === 2 && (await fetch(`${BASE}/pdf/${poll.id}/3`)).status === 404, "reduzir seções apaga PDFs das removidas");
+}
+
 // encerrar
 x = await J(`/api/polls/${poll.id}`, { method: "PUT", headers: AH, body: JSON.stringify({ status: "closed" }) });
 sm2.ws.send(JSON.stringify({ t: "vote", sec: 0, q: 3, value: 2 })); await sleep(300);

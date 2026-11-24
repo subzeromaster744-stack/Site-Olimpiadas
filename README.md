@@ -6,6 +6,7 @@ Votações (formulários com notas de 1 a 5 estrelas) em **tempo real**, rodando
 - **Organizador** (link principal `/`, protegido por senha; `/admin` redireciona para cá): cria formulários em 3 passos (rodada, categoria, turno, seções com imagem, perguntas),
   gera o **QR Code** de cada votação, vê **quem está online** e o progresso de cada pessoa, acompanha as médias
   ao vivo, **expulsa** quem não foi convidado (e readmite), encerra/reabre/exclui e baixa CSV.
+- **PDF nas seções:** em cada seção dá para anexar **imagem ou PDF** (até 20 MB). O painel gera a prévia da 1ª página no navegador (pdf.js) e o participante vê essa prévia e pode tocar em “Abrir PDF completo”.
 - **Votante** (`/v/<id>`, o link do QR Code — só consegue responder, sem acesso ao painel): precisa **digitar o nome** antes de começar; vota seção por seção;
   se for expulso, é desconectado na hora e não consegue voltar (nem com o mesmo nome).
 
@@ -37,7 +38,7 @@ Domínio próprio: *Settings → Domains & Routes* no Worker.
 ```
 src/worker.js   entrada: login admin (HMAC), roteia API/WebSocket para o Durable Object, serve /public
 src/hub.js      Durable Object: SQLite (votações, participantes, votos, imagens) + WebSockets em tempo real
-public/         index.html (painel), v/ (votação), css/, js/, vendor/qrcode.js (MIT)
+public/         index.html (painel), v/ (votação), css/, js/, vendor/ (qrcode.js MIT, pdf.js Apache-2.0)
 test/e2e.mjs    teste de API + WebSocket
 ```
 

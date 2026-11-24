@@ -47,7 +47,7 @@ export default {
       return json({ token: await adminToken(env) });
     }
 
-    const toHub = p.startsWith("/api/") || p.startsWith("/ws/") || p.startsWith("/img/");
+    const toHub = p.startsWith("/api/") || p.startsWith("/ws/") || p.startsWith("/img/") || p.startsWith("/pdf/");
     if (toHub) {
       const admin = await isAdmin(request, url, env);
       if ((p.startsWith("/api/polls") || p === "/ws/admin") && !admin) return json({ error: "unauthorized" }, 401);
