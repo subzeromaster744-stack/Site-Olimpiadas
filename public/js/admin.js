@@ -577,22 +577,3 @@ function formView(p, opts = {}) {
 
 /* ---------- início ---------- */
 if (A.token) boot(); else showLogin();
-
-/* ---------- PWA: service worker + botão "instalar app" ---------- */
-if ("serviceWorker" in navigator) addEventListener("load", () => navigator.serviceWorker.register("/sw.js").catch(() => {}));
-{
-  const standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone;
-  const pill = (content) => { $("#installpill")?.remove(); if (content) document.body.append(h("div", { id: "installpill", class: "installpill" }, ...content)); };
-  let ev = null;
-  addEventListener("beforeinstallprompt", (e) => {
-    e.preventDefault(); ev = e;
-    pill([h("span", {}, "📲 Instalar o painel como app"), h("button", { class: "btn sm", type: "button", onclick: async () => { ev.prompt(); await ev.userChoice.catch(() => {}); ev = null; pill(null); } }, "Instalar"),
-      h("button", { class: "x", type: "button", "aria-label": "Fechar", onclick: () => pill(null) }, "×")]);
-  });
-  addEventListener("appinstalled", () => pill(null));
-  // iPhone/iPad não tem botão automático: mostra a dica uma única vez
-  const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
-  let seen = false; try { seen = localStorage.getItem("olp_ios_tip"); } catch {}
-  if (ios && !standalone && !seen) addEventListener("load", () => pill([h("span", {}, "📲 Para instalar: toque em Compartilhar e depois em “Adicionar à Tela de Início”."),
-    h("button", { class: "x", type: "button", "aria-label": "Fechar", onclick: () => { try { localStorage.setItem("olp_ios_tip", "1"); } catch {} pill(null); } }, "×")]));
-}
