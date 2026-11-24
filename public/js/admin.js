@@ -2,7 +2,7 @@
 const RODADAS = ["1° Rodada", "2° Rodada", "3° Rodada", "Final"];
 const TURNOS = ["1° Turno", "2° Turno", "3° Turno"];
 const CATS = ["Segurança", "Quick Kaizen", "Standard Kaizen"];
-const DEF_Q = ["Solução do problema", "Impacto nos indicadores", "Criatividade / inovação", "Facilidade de replicação", "Custo-benefício", "Clareza do relatório"];
+const DEF_Q = ["Solução do problema", "Impacto nos indicadores", "Simplicidade da solução", "Retorno financeiro (se aplicável)", "Criatividade da solução", "Solução devidamente expandida (se aplicável)"];
 const TOKEN_KEY = "olp_admin";
 const USER_KEY = "olp_user";
 

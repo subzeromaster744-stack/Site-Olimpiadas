@@ -16,10 +16,10 @@ const clean = (s, max) =>
 const DEFAULT_QUESTIONS = [
   "Solução do problema",
   "Impacto nos indicadores",
-  "Criatividade / inovação",
-  "Facilidade de replicação",
-  "Custo-benefício",
-  "Clareza do relatório",
+  "Simplicidade da solução",
+  "Retorno financeiro (se aplicável)",
+  "Criatividade da solução",
+  "Solução devidamente expandida (se aplicável)",
 ];
 const MAX_IMAGE = 1_900_000; // bytes (limite de linha do SQLite do DO é 2 MB)
 const MAX_PARTICIPANTS = 3000;
