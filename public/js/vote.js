@@ -77,7 +77,7 @@ function render(keep) {
     body.append(h("div", { class: "progress" }, h("div", { class: "bar" }, h("i", { style: `width:${Math.round((S.step / nSec()) * 100)}%` })), h("small", {}, `Seção ${S.step + 1} de ${nSec()}`)));
   }
   const left = h("aside", { class: "card left" },
-    h("div", { class: "banner" }, h("div", { class: "big" }, "10"), h("div", { class: "sub" }, "anos · Olimpíadas")), body);
+    bannerEl(p.banner), body);
   const view = h("div", { class: "inner", id: "view" });
   view.append(S.step === "name" ? viewName() : S.step === "done" ? viewDone() : viewSection(S.step));
   root.replaceChildren(h("div", { class: "app" }, left,

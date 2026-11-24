@@ -25,6 +25,7 @@ const MAX_IMAGE = 1_900_000; // bytes (limite de linha do SQLite do DO é 2 MB)
 const MAX_PARTICIPANTS = 3000;
 const MAX_PDF = 20 * 1024 * 1024; // PDF completo da seção (guardado em pedaços)
 const MAX_USERS = 1000;
+const DEF_BIG = "10", DEF_SUB = "Anos · Olimpíadas"; // banner padrão (a imagem do banner fica em images com sec = -1)
 const CHUNK = 1_500_000;           // cada linha do SQLite do DO aceita até 2 MB
 
 export class Hub extends DurableObject {
@@ -53,6 +54,11 @@ export class Hub extends DurableObject {
     // migração: formulários passam a ter dono (NULL = criados antes das contas; só o administrador vê)
     if (!this.q("PRAGMA table_info(polls)").some((c) => c.name === "owner"))
       x(`ALTER TABLE polls ADD COLUMN owner TEXT`);
+    // migração: texto do banner da página de votação
+    if (!this.q("PRAGMA table_info(polls)").some((c) => c.name === "banner_big")) {
+      x(`ALTER TABLE polls ADD COLUMN banner_big TEXT`);
+      x(`ALTER TABLE polls ADD COLUMN banner_sub TEXT`);
+    }
     x(`CREATE TABLE IF NOT EXISTS users (
          id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
          salt TEXT NOT NULL, hash TEXT NOT NULL, created_at INTEGER NOT NULL)`);
@@ -120,6 +126,7 @@ export class Hub extends DurableObject {
     return {
       id: r.id, rodada: r.rodada, categoria: r.categoria, turno: r.turno, title: r.title,
       status: r.status, sections, questions: JSON.parse(r.questions),
+      banner: { big: r.banner_big ?? DEF_BIG, sub: r.banner_sub ?? DEF_SUB, img: vers[-1] != null ? `/img/${r.id}/-1?v=${vers[-1]}` : null },
     };
   }
 
@@ -197,7 +204,9 @@ export class Hub extends DurableObject {
     let questions = Array.isArray(b.questions) ? b.questions.map((x) => clean(x, 160)).filter(Boolean).slice(0, 20) : [];
     if (!questions.length) questions = DEFAULT_QUESTIONS;
     const title = clean(b.title, 120) || [rodada, categoria, turno].filter(Boolean).join(" ");
-    return { rodada, categoria, turno, title, sections, questions };
+    const bannerBig = b.bannerBig === undefined ? DEF_BIG : clean(b.bannerBig, 12);
+    const bannerSub = b.bannerSub === undefined ? DEF_SUB : clean(b.bannerSub, 40);
+    return { rodada, categoria, turno, title, sections, questions, bannerBig, bannerSub };
   }
 
   /* ------------------------------ HTTP ------------------------------ */
@@ -217,7 +226,7 @@ export class Hub extends DurableObject {
     }
     if ((m = path.match(/^\/ws\/p\/([a-z0-9]+)$/))) return this.acceptVoter(request, m[1], url.searchParams.get("token"));
 
-    if ((m = path.match(/^\/img\/([a-z0-9]+)\/(\d+)$/))) {
+    if ((m = path.match(/^\/img\/([a-z0-9]+)\/(-?\d+)$/))) {
       const img = this.q("SELECT mime, data FROM images WHERE poll_id=? AND sec=?", m[1], Number(m[2]))[0];
       if (!img) return new Response("not found", { status: 404 });
       return new Response(img.data, {
@@ -272,9 +281,9 @@ export class Hub extends DurableObject {
       const d = this.parsePoll(b);
       const id = rid(8);
       this.sql.exec(
-        `INSERT INTO polls (id, rodada, categoria, turno, title, status, sections, questions, created_at, owner)
-         VALUES (?,?,?,?,?,'open',?,?,?,?)`,
-        id, d.rodada, d.categoria, d.turno, d.title, JSON.stringify(d.sections), JSON.stringify(d.questions), Date.now(), admin ? "admin" : uid);
+        `INSERT INTO polls (id, rodada, categoria, turno, title, status, sections, questions, created_at, owner, banner_big, banner_sub)
+         VALUES (?,?,?,?,?,'open',?,?,?,?,?,?)`,
+        id, d.rodada, d.categoria, d.turno, d.title, JSON.stringify(d.sections), JSON.stringify(d.questions), Date.now(), admin ? "admin" : uid, d.bannerBig, d.bannerSub);
       const row = this.pollRow(id);
       const poll = this.adminPoll(row);
       this.toAdmins({ t: "poll", poll }, row.owner);
@@ -289,11 +298,12 @@ export class Hub extends DurableObject {
         let b; try { b = await request.json(); } catch { return json({ error: "bad_json" }, 400); }
         const d = this.parsePoll({ ...JSON.parse(JSON.stringify({
           rodada: r.rodada, categoria: r.categoria, turno: r.turno, title: r.title,
-          sections: JSON.parse(r.sections), questions: JSON.parse(r.questions) })), ...b });
+          sections: JSON.parse(r.sections), questions: JSON.parse(r.questions),
+          bannerBig: r.banner_big ?? DEF_BIG, bannerSub: r.banner_sub ?? DEF_SUB })), ...b });
         const status = b.status === "closed" ? "closed" : b.status === "open" ? "open" : r.status;
         this.sql.exec(
-          "UPDATE polls SET rodada=?, categoria=?, turno=?, title=?, status=?, sections=?, questions=? WHERE id=?",
-          d.rodada, d.categoria, d.turno, d.title, status, JSON.stringify(d.sections), JSON.stringify(d.questions), id);
+          "UPDATE polls SET rodada=?, categoria=?, turno=?, title=?, status=?, sections=?, questions=?, banner_big=?, banner_sub=? WHERE id=?",
+          d.rodada, d.categoria, d.turno, d.title, status, JSON.stringify(d.sections), JSON.stringify(d.questions), d.bannerBig, d.bannerSub, id);
         this.sql.exec("DELETE FROM votes WHERE poll_id=? AND (sec>=? OR q>=?)", id, d.sections.length, d.questions.length);
         this.sql.exec("DELETE FROM images WHERE poll_id=? AND sec>=?", id, d.sections.length);
         this.dropDoc(id, d.sections.length);
@@ -311,11 +321,11 @@ export class Hub extends DurableObject {
       }
     }
 
-    if ((m = path.match(/^\/api\/polls\/([a-z0-9]+)\/image\/(\d+)$/))) {
+    if ((m = path.match(/^\/api\/polls\/([a-z0-9]+)\/image\/(-?\d+)$/))) {
       const id = m[1], sec = Number(m[2]);
       const r = this.pollRow(id);
       if (!r) return json({ error: "not_found" }, 404);
-      if (sec >= JSON.parse(r.sections).length) return json({ error: "bad_section" }, 400);
+      if (sec < -1 || sec >= JSON.parse(r.sections).length) return json({ error: "bad_section" }, 400); // -1 = banner
       if (method === "PUT") {
         const mime = (request.headers.get("content-type") || "").split(";")[0].trim();
         if (!/^image\/(jpeg|png|webp)$/.test(mime)) return json({ error: "Use JPEG, PNG ou WebP." }, 415);

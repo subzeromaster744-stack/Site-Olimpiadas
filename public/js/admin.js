@@ -225,9 +225,9 @@ function kick(p, x) {
 
 /* ---------- resultados ---------- */
 function tabResults(p) {
-  const head = h("tr", {}, h("th", {}, "Pergunta"), p.sections.map((s, i) => h("th", { class: "c", title: s.title }, `Seção ${i + 1}`)));
+  const head = h("tr", {}, h("th", {}, "Pergunta"), p.sections.map((s, i) => h("th", { class: "c" }, s.title || `Seção ${i + 1}`)));
   const body = h("tbody", {}, p.questions.map((q, j) => h("tr", {}, h("td", {}, q), p.sections.map((_, i) => { const c = p.results.cells[`${i}_${j}`]; return h("td", { class: "c" }, c ? fmt(c.avg) : "–"); }))));
-  const foot = h("tr", {}, h("td", {}, h("b", {}, "Média da seção")), p.sections.map((_, i) => {
+  const foot = h("tr", {}, h("td", {}, h("b", {}, "Média do projeto")), p.sections.map((_, i) => {
     let s = 0, n = 0; p.questions.forEach((_, j) => { const c = p.results.cells[`${i}_${j}`]; if (c) { s += c.avg * c.n; n += c.n; } });
     return h("td", { class: "c" }, h("b", {}, fmt(n ? s / n : 0)));
   }));
@@ -235,7 +235,7 @@ function tabResults(p) {
     h("div", { class: "head2" }, h("p", { class: "small", style: "margin:0" }, `${p.results.respondents} participante(s) com notas · atualiza sozinho · votos de expulsos e de respostas anuladas não contam.`),
       h("button", { class: "btn ghost sm", type: "button", onclick: () => exportCsv(p) }, "⬇ Baixar CSV")),
     h("div", { style: "overflow-x:auto" }, h("table", { class: "t" }, h("thead", {}, head), body, h("tfoot", {}, foot))),
-    p.sections.some((s) => s.title) ? h("p", { class: "small", style: "margin-top:12px" }, p.sections.map((s, i) => `Seção ${i + 1}: ${s.title || "—"}`).join("  ·  ")) : null);
+    null);
 }
 async function exportCsv(p) {
   try {
@@ -343,7 +343,8 @@ const configTab = (p) => formView(p);
 
 function formView(p, opts = {}) {
   const edit = !!p, base = p || opts.from || null, dup = !edit && !!opts.from;
-  const v = { rodada: base?.rodada || RODADAS[0], categoria: base?.categoria || CATS[0], turno: base?.turno ?? TURNOS[0], title: edit ? p.title : "" };
+  const v = { rodada: base?.rodada || RODADAS[0], categoria: base?.categoria || CATS[0], turno: base?.turno ?? TURNOS[0], title: edit ? p.title : "", bannerBig: base?.banner?.big ?? "10", bannerSub: base?.banner?.sub ?? "Anos · Olimpíadas" };
+  const bn = { img: base?.banner?.img || null, file: null, removed: false };
   const mkDraft = (s) => ({ title: s?.title || "", img: s?.img || null, file: null, removed: false, pdf: null, pdfUrl: s?.pdf || null, pdfName: s?.pdfName || null, pdfSize: s?.pdfSize || null, pdfPages: null, pdfRemoved: false });
   const drafts = (base?.sections || Array.from({ length: 4 }, () => null)).map(mkDraft);
   const qs = h("textarea", { rows: "8", placeholder: "Uma pergunta por linha" }); qs.value = (base?.questions || DEF_Q).join("\n");
@@ -357,11 +358,36 @@ function formView(p, opts = {}) {
   const title = h("input", { type: "text", maxlength: "120", value: v.title, placeholder: "Deixe vazio para usar o padrão acima" });
   title.addEventListener("input", () => { v.title = title.value; upd(); });
   const turnoChips = chips([...TURNOS, "Sem turno"], () => (v.turno === "" ? "Sem turno" : v.turno), (t) => (v.turno = t === "Sem turno" ? "" : t), upd);
+  /* banner (topo da página de votação) */
+  const bpv = h("div", { class: "bannerpv" });
+  const drawBanner = () => {
+    const src = bn.file ? URL.createObjectURL(bn.file) : bn.removed ? null : bn.img;
+    bpv.replaceChildren(bannerEl({ big: v.bannerBig, sub: v.bannerSub, img: src }));
+  };
+  const bigIn = h("input", { type: "text", maxlength: "12", value: v.bannerBig, placeholder: "Ex.: 10" });
+  const subIn = h("input", { type: "text", maxlength: "40", value: v.bannerSub, placeholder: "Ex.: Anos · Olimpíadas" });
+  bigIn.addEventListener("input", () => { v.bannerBig = bigIn.value; drawBanner(); });
+  subIn.addEventListener("input", () => { v.bannerSub = subIn.value; drawBanner(); });
+  const bfile = h("input", { type: "file", accept: "image/*", id: "bfile", class: "hidden" });
+  bfile.addEventListener("change", async () => {
+    const f = bfile.files[0]; if (!f) return;
+    try { bn.file = await resizeImage(f); bn.removed = false; } catch (e) { alert(e.message); }
+    bfile.value = ""; drawBanner();
+  });
+  const bannerField = h("div", { class: "field" }, h("label", { class: "lbl" }, "Banner do topo"),
+    h("div", { class: "hint", style: "margin:0 0 8px" }, "Edite os textos ou use sua própria imagem no lugar (ideal: formato de faixa, ex.: 1200 × 690)."),
+    bpv,
+    h("div", { class: "grid2" }, h("div", {}, h("label", { class: "lbl sm" }, "Texto grande"), bigIn), h("div", {}, h("label", { class: "lbl sm" }, "Texto pequeno"), subIn)),
+    h("div", { style: "display:flex;gap:10px;margin-top:8px;flex-wrap:wrap" },
+      h("label", { class: "btn ghost sm", for: "bfile" }, "🖼 Usar uma imagem"), bfile,
+      h("button", { class: "btn ghost sm", type: "button", onclick: () => { bn.file = null; bn.removed = true; drawBanner(); } }, "Voltar ao banner de texto"),
+      h("button", { class: "btn ghost sm", type: "button", onclick: () => { v.bannerBig = bigIn.value = "10"; v.bannerSub = subIn.value = "Anos · Olimpíadas"; drawBanner(); } }, "Restaurar padrão")));
+  drawBanner();
   const b1 = h("div", { class: "block" },
     h("div", { class: "field" }, h("label", { class: "lbl" }, "Rodada"), chips(RODADAS, () => v.rodada, (r) => (v.rodada = r), upd)),
     h("div", { class: "field" }, h("label", { class: "lbl" }, "Categoria"), cat, catChips, h("div", { class: "hint" }, "Escolha uma sugestão ou digite outra.")),
     h("div", { class: "field" }, h("label", { class: "lbl" }, "Turno"), turnoChips),
-    h("div", { class: "field" }, h("label", { class: "lbl" }, "Título (opcional)"), title), preview);
+    h("div", { class: "field" }, h("label", { class: "lbl" }, "Título (opcional)"), title), preview, bannerField);
   upd();
 
   /* bloco 2: seções */
@@ -414,8 +440,12 @@ function formView(p, opts = {}) {
     if (!qs.value.split("\n").some((x) => x.trim())) { err.textContent = "Escreva ao menos uma pergunta."; return; }
     btn.disabled = true; btn.textContent = "Salvando…";
     try {
-      const body = JSON.stringify({ rodada: v.rodada, categoria: v.categoria, turno: v.turno, title: v.title, sections: drafts.map((d) => ({ title: d.title })), questions: qs.value.split("\n") });
+      const body = JSON.stringify({ rodada: v.rodada, categoria: v.categoria, turno: v.turno, title: v.title, bannerBig: v.bannerBig, bannerSub: v.bannerSub, sections: drafts.map((d) => ({ title: d.title })), questions: qs.value.split("\n") });
       const poll = edit ? (await api(`/api/polls/${p.id}`, { method: "PUT", body }), p) : await api("/api/polls", { method: "POST", body });
+      const putBanner = (blob) => api(`/api/polls/${poll.id}/image/-1`, { method: "PUT", body: blob, headers: { "content-type": blob.type || "image/jpeg" } });
+      if (bn.file) await putBanner(bn.file);
+      else if (bn.removed && bn.img && edit) await api(`/api/polls/${poll.id}/image/-1`, { method: "DELETE" });
+      else if (dup && bn.img && !bn.removed) await putBanner(await (await fetch(bn.img)).blob());
       for (let i = 0; i < drafts.length; i++) {
         const d = drafts[i], put = (blob) => api(`/api/polls/${poll.id}/image/${i}`, { method: "PUT", body: blob, headers: { "content-type": blob.type || "image/jpeg" } });
         if (d.file) await put(d.file);
@@ -429,6 +459,7 @@ function formView(p, opts = {}) {
       A.sel = poll.id; A.view = "poll";
       if (edit) {
         // o formulário continua aberto: marca o que já foi salvo para não reenviar nem perder a prévia
+        if (bn.file) { bn.img = URL.createObjectURL(bn.file); bn.file = null; } else if (bn.removed) { bn.img = null; bn.removed = false; }
         for (const d of drafts) {
           if (d.file) { d.img = URL.createObjectURL(d.file); d.file = null; } else if (d.removed) { d.img = null; d.removed = false; }
           if (d.pdf) { d.pdfUrl = "salvo"; d.pdfName = d.pdf.name; d.pdfSize = d.pdf.size; d.pdf = null; } else if (d.pdfRemoved) { d.pdfUrl = null; d.pdfRemoved = false; }

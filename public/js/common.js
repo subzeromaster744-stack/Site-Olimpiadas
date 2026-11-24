@@ -33,3 +33,9 @@ function liveSocket(path, { onmessage, onstatus }) {
     close: () => { stopped = true; clearTimeout(timer); clearInterval(ping); ws?.close(); },
   };
 }
+
+/* banner do topo da página de votação (texto editável ou imagem) */
+function bannerEl(b) {
+  if (b?.img) return h("div", { class: "banner pic" }, h("img", { src: b.img, alt: "" }));
+  return h("div", { class: "banner" }, b?.big ? h("div", { class: "big" }, b.big) : null, b?.sub ? h("div", { class: "sub" }, b.sub) : null);
+}

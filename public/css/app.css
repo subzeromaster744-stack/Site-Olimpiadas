@@ -173,3 +173,10 @@ td.acts{white-space:nowrap}td.acts .btn{margin-left:6px}
 .seg button{flex:1;border:0;background:transparent;padding:8px;border-radius:7px;font:inherit;font-weight:600;color:#4a6378;cursor:pointer}
 .seg button.on{background:#fff;color:var(--title);box-shadow:0 1px 4px rgba(8,50,80,.18)}
 .who{color:#fff;font-weight:600;font-size:14px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+.banner.pic{padding:0;background:#0a68b0}.banner.pic img{width:100%;height:100%;object-fit:cover;display:block}
+.bannerpv{border-radius:12px;overflow:hidden;max-width:420px;margin-bottom:10px;border:1px solid #cfdbe6}
+.bannerpv .banner{height:170px}.bannerpv .banner .big{font-size:68px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px;max-width:420px}
+.lbl.sm{font-size:12px;font-weight:600;color:#4a6378;display:block;margin-bottom:4px}
+.t th.c{white-space:normal;min-width:90px}
