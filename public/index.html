@@ -3,16 +3,15 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
 <link rel="icon" href="data:,">
-<title>Site Olimpíadas</title>
+<title>Painel de votações</title>
 <link rel="stylesheet" href="/css/app.css">
 </head>
 <body>
-<div class="card full">
-  <div class="ico">🏅</div>
-  <h1>Site Olimpíadas</h1>
-  <p>Para votar, escaneie o QR Code que o organizador mostrar ou abra o link que ele enviar.</p>
-  <p style="margin-top:22px"><a class="btn ghost" href="/admin" style="text-decoration:none;display:inline-block">Área do organizador</a></p>
-</div>
+<div id="root"></div>
+<script src="/vendor/qrcode.js"></script>
+<script src="/js/common.js"></script>
+<script src="/js/admin.js"></script>
 </body>
 </html>

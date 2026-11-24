@@ -3,17 +3,17 @@
 Votações (formulários com notas de 1 a 5 estrelas) em **tempo real**, rodando 100% na Cloudflare
 (Worker + Durable Object com SQLite + arquivos estáticos).
 
-- **Administrador** (`/admin`, protegido por senha): cria votações (rodada, categoria, turno, seções com imagem, perguntas),
+- **Organizador** (link principal `/`, protegido por senha; `/admin` redireciona para cá): cria formulários em 3 passos (rodada, categoria, turno, seções com imagem, perguntas),
   gera o **QR Code** de cada votação, vê **quem está online** e o progresso de cada pessoa, acompanha as médias
   ao vivo, **expulsa** quem não foi convidado (e readmite), encerra/reabre/exclui e baixa CSV.
-- **Votante** (`/v/<id>`, o link do QR Code): precisa **digitar o nome** antes de começar; vota seção por seção;
+- **Votante** (`/v/<id>`, o link do QR Code — só consegue responder, sem acesso ao painel): precisa **digitar o nome** antes de começar; vota seção por seção;
   se for expulso, é desconectado na hora e não consegue voltar (nem com o mesmo nome).
 
 ## Rodar localmente
 ```bash
 npm install
 echo "ADMIN_PASSWORD=sua-senha" > .dev.vars   # só local, não vai pro Git
-npm run dev                                   # http://localhost:8787  (admin em /admin)
+npm run dev                                   # http://localhost:8787  (painel em /)
 npm test                                      # testes ponta a ponta (com o dev rodando)
 ```
 
@@ -22,7 +22,7 @@ npm test                                      # testes ponta a ponta (com o dev 
 1. Cloudflare → *Workers & Pages* → *Create* → *Import a repository* → escolha `Site-Olimpiadas`.
 2. Build command: *(vazio)* · Deploy command: `npx wrangler deploy` · Branch: `main`.
 3. Depois do 1º deploy: *Settings → Variables and Secrets → Add* → tipo **Secret**, nome `ADMIN_PASSWORD`, valor = a senha do admin.
-4. Abra `https://site-olimpiadas.<seu-subdominio>.workers.dev/admin`.
+4. Abra `https://site-olimpiadas.<seu-subdominio>.workers.dev/` (o painel).
 
 **Opção B – pelo terminal**
 ```bash
@@ -37,7 +37,7 @@ Domínio próprio: *Settings → Domains & Routes* no Worker.
 ```
 src/worker.js   entrada: login admin (HMAC), roteia API/WebSocket para o Durable Object, serve /public
 src/hub.js      Durable Object: SQLite (votações, participantes, votos, imagens) + WebSockets em tempo real
-public/         admin/, v/ (votação), css/, js/, vendor/qrcode.js (MIT)
+public/         index.html (painel), v/ (votação), css/, js/, vendor/qrcode.js (MIT)
 test/e2e.mjs    teste de API + WebSocket
 ```
 

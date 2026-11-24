@@ -1,14 +1,16 @@
-/* Painel do administrador: /admin */
+/* Painel do organizador (link principal "/"): cria votações, mostra QR, acompanha ao vivo e expulsa. */
 const RODADAS = ["1ª Rodada", "2ª Rodada", "3ª Rodada", "4ª Rodada"];
 const TURNOS = ["1º Turno", "2º Turno", "3º Turno"];
 const CATS = ["Segurança", "Qualidade", "Produtividade"];
 const DEF_Q = ["Solução do problema", "Impacto nos indicadores", "Criatividade / inovação", "Facilidade de replicação", "Custo-benefício", "Clareza do relatório"];
+const TOKEN_KEY = "olp_admin";
 
-const A = { token: sessionStorage.getItem("olp_admin"), polls: new Map(), sel: null, tab: "participantes", conn: "off", sock: null, loaded: false };
+const A = { token: localStorage.getItem(TOKEN_KEY), polls: new Map(), sel: null, view: "poll", tab: "live", conn: "off", sock: null, loaded: false, flash: null, dupFrom: null };
 const root = $("#root");
 const fmt = (x) => (x ? x.toFixed(2).replace(".", ",") : "–");
 const hhmm = (t) => new Date(t).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
 const voteUrl = (id) => `${location.origin}/v/${id}`;
+const activeOf = (p) => p.participants.filter((x) => x.status === "active");
 
 async function api(path, opts = {}) {
   const r = await fetch(path, { ...opts, headers: { authorization: "Bearer " + A.token, ...(opts.body && typeof opts.body === "string" ? { "content-type": "application/json" } : {}), ...opts.headers } });
@@ -19,9 +21,9 @@ async function api(path, opts = {}) {
 }
 
 /* ---------- login ---------- */
-function logout() { sessionStorage.removeItem("olp_admin"); A.token = null; A.sock?.close(); A.sock = null; A.loaded = false; A.polls.clear(); showLogin(); }
+function logout() { localStorage.removeItem(TOKEN_KEY); A.token = null; A.sock?.close(); A.sock = null; A.loaded = false; A.polls.clear(); showLogin(); }
 function showLogin(msg) {
-  const pw = h("input", { type: "password", placeholder: "Senha do administrador", autofocus: true, autocomplete: "current-password" });
+  const pw = h("input", { type: "password", placeholder: "Senha do organizador", autofocus: true, autocomplete: "current-password" });
   const err = h("div", { class: "err-text" }, msg || "");
   const go = async () => {
     err.textContent = ""; btn.disabled = true;
@@ -29,46 +31,58 @@ function showLogin(msg) {
       const r = await fetch("/api/admin/login", { method: "POST", body: JSON.stringify({ password: pw.value }) });
       const b = await r.json();
       if (!r.ok) throw new Error(b.error);
-      A.token = b.token; sessionStorage.setItem("olp_admin", b.token); boot();
+      A.token = b.token; localStorage.setItem(TOKEN_KEY, b.token); boot();
     } catch (e) { err.textContent = e.message || "Falha no login"; btn.disabled = false; }
   };
-  const btn = h("button", { class: "btn", type: "button", onclick: go }, "Entrar");
+  const btn = h("button", { class: "btn", type: "button", style: "width:100%", onclick: go }, "Entrar");
   pw.addEventListener("keydown", (e) => e.key === "Enter" && go());
-  root.replaceChildren(h("div", { class: "card login" }, h("h1", {}, "Administração"), h("p", { class: "small", style: "margin:0 0 16px" }, "Área restrita ao organizador."), pw, err, h("div", { style: "margin-top:12px" }, btn)));
+  root.replaceChildren(h("div", { class: "card login" },
+    h("div", { class: "logo" }, "🏅"), h("h1", {}, "Painel de votações"),
+    h("p", { class: "small", style: "margin:0 0 18px" }, "Entre para criar formulários, gerar QR Codes e acompanhar as respostas ao vivo."),
+    pw, err, h("div", { style: "margin-top:12px" }, btn),
+    h("p", { class: "small", style: "margin:16px 0 0;text-align:center" }, "Quem vai apenas votar não precisa daqui: basta escanear o QR Code.")));
 }
 
-/* ---------- conexão em tempo real ---------- */
+/* ---------- tempo real ---------- */
+const editing = (id) => A.view === "new" || (A.view === "poll" && A.tab === "config" && A.sel === id);
 function connect() {
   A.sock = liveSocket(() => `/ws/admin?token=${encodeURIComponent(A.token)}`, {
     onstatus: (s) => { A.conn = s; renderBar(); },
     onmessage: (m) => {
-      if (m.t === "init") { A.polls = new Map(m.polls.map((p) => [p.id, p])); A.loaded = true; if (!A.sel && m.polls[0]) A.sel = m.polls[0].id; if (A.sel && !A.polls.has(A.sel)) A.sel = m.polls[0]?.id || null; if (editing(A.sel)) { renderSide(); renderBar(); } else renderAll(); }
-      else if (m.t === "poll") {
+      if (m.t === "init") {
+        A.polls = new Map(m.polls.map((p) => [p.id, p])); A.loaded = true;
+        if (!A.sel || !A.polls.has(A.sel)) A.sel = m.polls[0]?.id || null;
+        if (editing(A.sel)) { renderSide(); renderBar(); } else renderAll();
+      } else if (m.t === "poll") {
         A.polls.set(m.poll.id, m.poll);
         if (editing(m.poll.id)) { renderSide(); renderBar(); } else renderAll();
+      } else if (m.t === "live") {
+        const p = A.polls.get(m.poll); if (!p) return;
+        p.participants = m.participants; p.results = m.results;
+        renderSide(); renderBar();
+        if (A.sel === m.poll && A.view === "poll") { renderHead(); if (["live", "resultados"].includes(A.tab)) renderTab(); }
+      } else if (m.t === "deleted") {
+        A.polls.delete(m.poll);
+        if (A.sel === m.poll) { A.sel = A.polls.keys().next().value || null; A.view = "poll"; A.tab = "live"; }
+        renderAll();
       }
-      else if (m.t === "live") { const p = A.polls.get(m.poll); if (!p) return; p.participants = m.participants; p.results = m.results; renderSide(); renderBar(); if (A.sel === m.poll) { renderHead(); if (["participantes", "resultados"].includes(A.tab) && A.view === "poll") renderTab(); } }
-      else if (m.t === "deleted") { A.polls.delete(m.poll); if (A.sel === m.poll) { A.sel = A.polls.keys().next().value || null; A.view = "poll"; } renderAll(); }
     },
   });
 }
-// true quando há um formulário aberto que não deve ser recriado por eventos ao vivo
-const editing = (id) => A.view === "new" || (A.view === "poll" && A.tab === "editar" && A.sel === id);
 function boot() { A.view = "poll"; layout(); connect(); }
 
 /* ---------- layout ---------- */
 function layout() {
-  root.replaceChildren(h("div", { class: "adm" },
-    h("div", { class: "bar", id: "bar" }),
+  root.replaceChildren(h("div", { class: "adm" }, h("div", { class: "bar", id: "bar" }),
     h("div", { class: "layout" }, h("aside", { class: "card side", id: "side" }), h("section", { class: "card main", id: "main" }))));
   renderAll();
 }
 function renderAll() { renderBar(); renderSide(); renderMain(); }
 function renderBar() {
   const bar = $("#bar"); if (!bar) return;
-  const online = [...A.polls.values()].reduce((n, p) => n + p.participants.filter((x) => x.online && x.status === "active").length, 0);
-  bar.replaceChildren(h("h1", {}, "Votações · Administração"),
-    h("div", { class: "row", style: "display:flex;gap:14px;align-items:center" },
+  const online = [...A.polls.values()].reduce((n, p) => n + activeOf(p).filter((x) => x.online).length, 0);
+  bar.replaceChildren(h("h1", {}, h("span", {}, "🏅 "), "Painel de votações"),
+    h("div", { style: "display:flex;gap:14px;align-items:center" },
       h("span", { class: "conn " + A.conn }, h("i"), A.conn === "on" ? `ao vivo · ${online} online` : "reconectando…"),
       h("button", { class: "btn ghost sm", type: "button", onclick: logout }, "Sair")));
 }
@@ -76,66 +90,80 @@ function renderSide() {
   const side = $("#side"); if (!side) return;
   const ul = h("ul", { class: "plist" });
   for (const p of A.polls.values()) {
-    const on = p.participants.filter((x) => x.online && x.status === "active").length;
-    ul.append(h("li", {}, h("button", { type: "button", class: p.id === A.sel && A.view !== "new" ? "on" : "", onclick: () => { A.sel = p.id; A.view = "poll"; A.tab = "participantes"; renderAll(); } },
+    const on = activeOf(p).filter((x) => x.online).length;
+    ul.append(h("li", {}, h("button", { type: "button", class: p.id === A.sel && A.view === "poll" ? "on" : "", onclick: () => { A.sel = p.id; A.view = "poll"; A.tab = "live"; renderAll(); } },
       h("span", { class: "t" }, p.title),
-      h("span", { class: "m" }, h("span", { class: "dot " + (on ? "on" : "") }), `${on} online · ${p.participants.filter((x) => x.status === "active").length} inscritos`, p.status === "closed" ? h("span", { class: "chip closed" }, "encerrada") : null))));
+      h("span", { class: "m" }, h("span", { class: "dot " + (on ? "on" : "") }), `${on} online · ${activeOf(p).length} participantes`, p.status === "closed" ? h("span", { class: "chip closed" }, "encerrada") : null))));
   }
-  side.replaceChildren(h("button", { class: "btn", type: "button", style: "width:100%", onclick: () => { A.view = "new"; renderAll(); } }, "+ Nova votação"),
-    h("h3", { style: "margin-top:16px" }, "Votações"), A.loaded ? (A.polls.size ? ul : h("p", { class: "small" }, "Nenhuma votação criada ainda.")) : h("p", { class: "small" }, "Carregando…"));
+  side.replaceChildren(
+    h("button", { class: "btn", type: "button", style: "width:100%", onclick: () => { A.view = "new"; A.dupFrom = null; renderAll(); } }, "＋ Criar formulário"),
+    h("h3", { style: "margin-top:18px" }, "Seus formulários"),
+    A.loaded ? (A.polls.size ? ul : h("p", { class: "small" }, "Você ainda não criou nenhum.")) : h("p", { class: "small" }, "Carregando…"));
 }
 function renderMain() {
   const main = $("#main"); if (!main) return;
-  if (A.view === "new") { main.replaceChildren(formView(null)); return; }
+  if (A.view === "new") { main.replaceChildren(formView(null, { from: A.dupFrom })); return; }
   const p = A.polls.get(A.sel);
-  if (!p) { main.replaceChildren(h("div", { class: "empty" }, A.loaded ? "Crie sua primeira votação em “+ Nova votação”." : "Carregando…")); return; }
+  if (!p) {
+    main.replaceChildren(!A.loaded ? h("div", { class: "empty" }, "Carregando…") : welcome());
+    return;
+  }
   main.replaceChildren(h("div", { id: "head" }), h("div", { class: "tabs", id: "tabs" }), h("div", { id: "tab" }));
-  A.view = A.view === "form" ? "form" : "poll";
   renderHead(); renderTabs(); renderTab();
+}
+function welcome() {
+  const step = (n, t, d) => h("div", { class: "wstep" }, h("div", { class: "wn" }, n), h("div", {}, h("b", {}, t), h("div", { class: "small" }, d)));
+  return h("div", { class: "welcome" }, h("div", { class: "logo" }, "🏅"), h("h2", {}, "Bem-vindo! Vamos criar o primeiro formulário"),
+    h("p", { class: "small", style: "max-width:520px;margin:0 auto 22px" }, "É rápido: você monta o formulário, mostra o QR Code e acompanha tudo em tempo real."),
+    h("div", { class: "wsteps" }, step("1", "Crie o formulário", "Rodada, categoria, turno, seções com imagem e perguntas."),
+      step("2", "Mostre o QR Code", "Quem escanear informa o nome e já pode votar."),
+      step("3", "Acompanhe ao vivo", "Veja quem entrou, as médias e expulse quem não for convidado.")),
+    h("button", { class: "btn", type: "button", style: "margin-top:24px;font-size:17px;padding:14px 30px", onclick: () => { A.view = "new"; renderAll(); } }, "＋ Criar formulário"));
 }
 function renderHead() {
   const head = $("#head"); const p = A.polls.get(A.sel); if (!head || !p) return;
-  const act = p.participants.filter((x) => x.status === "active");
-  head.replaceChildren(h("div", { class: "head2" }, h("h2", {}, p.title), h("span", { class: "chip " + (p.status === "closed" ? "closed" : "") }, p.status === "closed" ? "Encerrada" : "Aberta")),
-    h("div", { class: "stats small" },
-      h("span", {}, h("b", {}, act.filter((x) => x.online).length), " online agora"), "·",
-      h("span", {}, h("b", {}, act.length), " inscritos"), "·",
-      h("span", {}, h("b", {}, p.results.respondents), " já votaram")));
+  const act = activeOf(p), online = act.filter((x) => x.online).length;
+  const closed = p.status === "closed";
+  head.replaceChildren(
+    h("div", { class: "head2" }, h("div", {}, h("h2", {}, p.title), h("span", { class: "chip " + (closed ? "closed" : "") }, closed ? "Encerrada – não aceita novos votos" : "Aberta para votação")),
+      h("button", { class: "btn ghost sm", type: "button", onclick: () => api(`/api/polls/${p.id}`, { method: "PUT", body: JSON.stringify({ status: closed ? "open" : "closed" }) }).catch((e) => alert(e.message)) }, closed ? "Reabrir" : "Encerrar votação")),
+    h("div", { class: "kpis" },
+      kpi(online, "online agora", "on"), kpi(act.length, "participantes"), kpi(p.results.respondents, "já votaram")));
 }
+const kpi = (n, l, cls) => h("div", { class: "kpi " + (cls || "") }, h("b", {}, String(n)), h("span", {}, l));
 function renderTabs() {
   const t = $("#tabs"); if (!t) return;
-  const tabs = [["participantes", "Participantes"], ["resultados", "Resultados"], ["qr", "QR Code"], ["editar", "Editar"]];
-  t.replaceChildren(...tabs.map(([k, l]) => h("button", { type: "button", class: A.tab === k && A.view === "poll" ? "on" : "", onclick: () => { A.tab = k; A.view = "poll"; renderTabs(); renderTab(); } }, l)));
+  const tabs = [["live", "👥 Ao vivo"], ["resultados", "📊 Resultados"], ["qr", "🔳 QR Code"], ["config", "⚙️ Configurar"]];
+  t.replaceChildren(...tabs.map(([k, l]) => h("button", { type: "button", class: A.tab === k ? "on" : "", onclick: () => { A.tab = k; renderTabs(); renderTab(); } }, l)));
 }
 function renderTab() {
   const el = $("#tab"); const p = A.polls.get(A.sel); if (!el || !p) return;
-  if (A.tab === "participantes") el.replaceChildren(tabParticipants(p));
-  else if (A.tab === "resultados") el.replaceChildren(tabResults(p));
-  else if (A.tab === "qr") el.replaceChildren(tabQR(p));
-  else { A.formMode = "edit"; el.replaceChildren(formView(p)); }
+  el.replaceChildren(A.tab === "live" ? tabLive(p) : A.tab === "resultados" ? tabResults(p) : A.tab === "qr" ? tabQR(p) : configTab(p));
 }
 
-/* ---------- participantes ---------- */
-function tabParticipants(p) {
-  const active = p.participants.filter((x) => x.status === "active").sort((a, b) => b.online - a.online || a.name.localeCompare(b.name, "pt-BR"));
+/* ---------- ao vivo (participantes) ---------- */
+function tabLive(p) {
+  const active = activeOf(p).sort((a, b) => b.online - a.online || a.name.localeCompare(b.name, "pt-BR"));
   const kicked = p.participants.filter((x) => x.status === "kicked");
   const w = h("div", {});
-  if (!active.length) w.append(h("div", { class: "empty" }, "Ninguém entrou ainda. Mostre o QR Code (aba “QR Code”) para os participantes."));
-  else {
+  if (!active.length) {
+    w.append(h("div", { class: "empty" }, h("div", { style: "font-size:42px" }, "📲"), h("b", {}, "Ninguém entrou ainda"), h("div", { class: "small", style: "margin:6px 0 14px" }, "Mostre o QR Code para os participantes. Quem entrar aparece aqui na hora."),
+      h("button", { class: "btn", type: "button", onclick: () => { A.tab = "qr"; renderTabs(); renderTab(); } }, "Ver QR Code")));
+  } else {
+    w.append(h("p", { class: "small", style: "margin:0 0 10px" }, "Não reconhece alguém? Clique em Expulsar: a pessoa é desconectada na hora e perde o acesso."));
     const tb = h("tbody", {});
     for (const x of active) {
       tb.append(h("tr", {},
         h("td", {}, h("span", { class: "dot " + (x.online ? "on" : "") }), " ", x.online ? "Online" : "Offline"),
-        h("td", {}, h("b", {}, x.name)),
-        h("td", {}, hhmm(x.joined_at)),
+        h("td", {}, h("b", {}, x.name)), h("td", {}, hhmm(x.joined_at)),
         h("td", { style: "min-width:140px" }, h("div", { class: "pbar" }, h("i", { style: `width:${Math.round((x.answered / x.total) * 100)}%` })), h("span", { class: "small" }, `${x.answered}/${x.total} respostas`)),
         h("td", { class: "c" }, h("button", { class: "btn danger sm", type: "button", onclick: () => kick(p, x) }, "Expulsar"))));
     }
-    w.append(h("table", { class: "t" }, h("thead", {}, h("tr", {}, ["Situação", "Nome", "Entrou às", "Progresso", ""].map((c) => h("th", {}, c)))), tb));
+    w.append(h("div", { style: "overflow-x:auto" }, h("table", { class: "t" }, h("thead", {}, h("tr", {}, ["Situação", "Nome", "Entrou às", "Progresso", ""].map((c) => h("th", {}, c)))), tb)));
   }
   if (kicked.length) {
     w.append(h("h3", { style: "margin:24px 0 8px;color:var(--err)" }, `Expulsos (${kicked.length})`),
-      h("table", { class: "t" }, h("tbody", {}, kicked.map((x) => h("tr", {}, h("td", {}, h("b", {}, x.name)), h("td", { class: "small" }, "Não pode voltar com este nome"),
+      h("table", { class: "t" }, h("tbody", {}, kicked.map((x) => h("tr", {}, h("td", {}, h("b", {}, x.name)), h("td", { class: "small" }, "Bloqueado nesta votação"),
         h("td", { class: "c" }, h("button", { class: "btn ghost sm", type: "button", onclick: () => api(`/api/polls/${p.id}/participants/${x.id}/unkick`, { method: "POST" }) }, "Readmitir")))))));
   }
   return w;
@@ -147,7 +175,6 @@ function kick(p, x) {
 
 /* ---------- resultados ---------- */
 function tabResults(p) {
-  const nS = p.sections.length;
   const head = h("tr", {}, h("th", {}, "Pergunta"), p.sections.map((s, i) => h("th", { class: "c", title: s.title }, `Seção ${i + 1}`)));
   const body = h("tbody", {}, p.questions.map((q, j) => h("tr", {}, h("td", {}, q), p.sections.map((_, i) => { const c = p.results.cells[`${i}_${j}`]; return h("td", { class: "c" }, c ? fmt(c.avg) : "–"); }))));
   const foot = h("tr", {}, h("td", {}, h("b", {}, "Média da seção")), p.sections.map((_, i) => {
@@ -155,8 +182,8 @@ function tabResults(p) {
     return h("td", { class: "c" }, h("b", {}, fmt(n ? s / n : 0)));
   }));
   return h("div", {},
-    h("div", { class: "head2" }, h("p", { class: "small", style: "margin:0" }, `${p.results.respondents} participante(s) com notas. Atualiza em tempo real; votos de expulsos não entram.`),
-      h("button", { class: "btn ghost sm", type: "button", onclick: () => exportCsv(p) }, "Baixar CSV")),
+    h("div", { class: "head2" }, h("p", { class: "small", style: "margin:0" }, `${p.results.respondents} participante(s) com notas · atualiza sozinho · votos de expulsos não contam.`),
+      h("button", { class: "btn ghost sm", type: "button", onclick: () => exportCsv(p) }, "⬇ Baixar CSV")),
     h("div", { style: "overflow-x:auto" }, h("table", { class: "t" }, h("thead", {}, head), body, h("tfoot", {}, foot))),
     p.sections.some((s) => s.title) ? h("p", { class: "small", style: "margin-top:12px" }, p.sections.map((s, i) => `Seção ${i + 1}: ${s.title || "—"}`).join("  ·  ")) : null);
 }
@@ -181,7 +208,7 @@ function drawQR(canvas, p) {
   const top = 40 + lines.length * 48 + 20, H = top + size + 110;
   canvas.width = W; canvas.height = H;
   ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, W, H);
-  ctx.fillStyle = "#285a7a"; ctx.textAlign = "center"; ctx.font = "700 40px 'Segoe UI',Arial,sans-serif";
+  ctx.fillStyle = "#0f4c75"; ctx.textAlign = "center"; ctx.font = "700 40px 'Segoe UI',Arial,sans-serif";
   lines.forEach((l, i) => ctx.fillText(l, W / 2, 62 + i * 48));
   ctx.fillStyle = "#000";
   for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) if (qr.isDark(r, c)) ctx.fillRect(off + c * cell, top + r * cell, cell, cell);
@@ -194,17 +221,19 @@ function tabQR(p) {
   const url = voteUrl(p.id), inp = h("input", { type: "text", readonly: true, value: url });
   inp.addEventListener("focus", () => inp.select());
   const copy = h("button", { class: "btn ghost sm", type: "button", onclick: async () => { try { await navigator.clipboard.writeText(url); } catch { inp.select(); document.execCommand("copy"); } copy.textContent = "Copiado ✓"; setTimeout(() => (copy.textContent = "Copiar"), 1500); } }, "Copiar");
-  return h("div", { class: "qrwrap" }, canvas, h("div", { class: "qrside" },
-    h("h3", { style: "margin:0 0 4px;color:var(--title)" }, "Link da votação"),
+  const flash = A.flash === "created" ? h("div", { class: "success" }, "✅ Formulário criado! Mostre este QR Code para os participantes (ou envie o link).") : null;
+  A.flash = null;
+  return h("div", {}, flash, h("div", { class: "qrwrap" }, canvas, h("div", { class: "qrside" },
+    h("h3", { style: "margin:0 0 4px;color:var(--title)" }, "Link para votar"),
     h("div", { class: "linkbox" }, inp, copy),
     h("div", { class: "actions", style: "margin-top:0" },
-      h("button", { class: "btn", type: "button", onclick: () => canvas.toBlob((b) => { const a = h("a", { href: URL.createObjectURL(b), download: `qr-${p.id}.png` }); document.body.append(a); a.click(); a.remove(); }) }, "Baixar PNG"),
-      h("button", { class: "btn ghost", type: "button", onclick: () => window.print() }, "Imprimir")),
-    h("p", { class: "small", style: "margin-top:16px" }, "Quem escanear precisa informar o nome antes de iniciar a votação. Você acompanha quem entrou na aba “Participantes” e pode expulsar quem não for convidado."),
-    p.status === "closed" ? h("div", { class: "notice" }, "Esta votação está encerrada: novos participantes não conseguem entrar.") : null));
+      h("button", { class: "btn", type: "button", onclick: () => canvas.toBlob((b) => { const a = h("a", { href: URL.createObjectURL(b), download: `qr-${p.id}.png` }); document.body.append(a); a.click(); a.remove(); }) }, "⬇ Baixar PNG"),
+      h("button", { class: "btn ghost", type: "button", onclick: () => window.print() }, "🖨 Imprimir")),
+    h("ul", { class: "tips" }, h("li", {}, "Quem escanear só consegue responder este formulário."), h("li", {}, "Antes de começar, a pessoa precisa digitar o nome."), h("li", {}, "Você vê quem entrou na aba “Ao vivo” e pode expulsar.")),
+    p.status === "closed" ? h("div", { class: "notice" }, "Esta votação está encerrada: ninguém novo consegue entrar.") : null)));
 }
 
-/* ---------- formulário (criar / editar) ---------- */
+/* ---------- formulário: criar (em passos) / configurar ---------- */
 function resizeImage(file) {
   return new Promise((res, rej) => {
     const url = URL.createObjectURL(file), im = new Image();
@@ -225,58 +254,106 @@ function resizeImage(file) {
   });
 }
 
-function formView(p) {
-  const edit = !!p; A.formMode = edit ? "edit" : "new";
-  const sel = (items, val) => { const s = h("select", {}); items.forEach((i) => { const o = h("option", { value: i }, i); if (i === val) o.selected = true; s.append(o); }); return s; };
-  const rodada = sel(RODADAS, p?.rodada || RODADAS[0]);
-  const turno = sel(TURNOS, p?.turno || TURNOS[0]);
-  const cat = h("input", { type: "text", list: "cats", maxlength: "40", value: p?.categoria || CATS[0], placeholder: "Ex.: Segurança" });
-  const dl = h("datalist", { id: "cats" }, CATS.map((c) => h("option", { value: c })));
-  const title = h("input", { type: "text", maxlength: "120", value: edit ? p.title : "", placeholder: "Opcional — padrão: rodada + categoria + turno" });
-  const qs = h("textarea", { rows: "7" }); qs.value = (p?.questions || DEF_Q).join("\n");
+function chips(items, get, set, after) {
+  const box = h("div", { class: "chips", role: "radiogroup" });
+  const draw = () => box.replaceChildren(...items.map((i) => h("button", { type: "button", role: "radio", "aria-checked": String(get() === i), class: "chipbtn" + (get() === i ? " on" : ""), onclick: () => { set(i); draw(); after?.(); } }, i)));
+  draw(); box.redraw = draw; return box;
+}
+const configTab = (p) => formView(p);
 
-  const drafts = (p?.sections || Array.from({ length: 4 }, () => ({ title: "", img: null }))).map((s) => ({ title: s.title, img: s.img, file: null, removed: false }));
+function formView(p, opts = {}) {
+  const edit = !!p, base = p || opts.from || null, dup = !edit && !!opts.from;
+  const v = { rodada: base?.rodada || RODADAS[0], categoria: base?.categoria || CATS[0], turno: base?.turno ?? TURNOS[0], title: edit ? p.title : "" };
+  const drafts = (base?.sections || Array.from({ length: 4 }, () => ({ title: "", img: null }))).map((s) => ({ title: s.title, img: s.img, file: null, removed: false }));
+  const qs = h("textarea", { rows: "8", placeholder: "Uma pergunta por linha" }); qs.value = (base?.questions || DEF_Q).join("\n");
+
+  /* bloco 1: dados */
+  const preview = h("div", { class: "previewline" });
+  const upd = () => { const t = [v.rodada, v.categoria, v.turno].filter(Boolean).join(" · "); preview.replaceChildren(h("small", {}, "Como vai aparecer para o participante"), h("b", {}, v.title.trim() || t || "—")); };
+  const cat = h("input", { type: "text", maxlength: "40", value: v.categoria, placeholder: "Ex.: Segurança" });
+  cat.addEventListener("input", () => { v.categoria = cat.value; catChips.redraw?.(); upd(); });
+  const catChips = chips(CATS, () => v.categoria, (c) => { v.categoria = c; cat.value = c; }, upd);
+  const title = h("input", { type: "text", maxlength: "120", value: v.title, placeholder: "Deixe vazio para usar o padrão acima" });
+  title.addEventListener("input", () => { v.title = title.value; upd(); });
+  const turnoChips = chips([...TURNOS, "Sem turno"], () => (v.turno === "" ? "Sem turno" : v.turno), (t) => (v.turno = t === "Sem turno" ? "" : t), upd);
+  const b1 = h("div", { class: "block" },
+    h("div", { class: "field" }, h("label", { class: "lbl" }, "Rodada"), chips(RODADAS, () => v.rodada, (r) => (v.rodada = r), upd)),
+    h("div", { class: "field" }, h("label", { class: "lbl" }, "Categoria"), cat, catChips, h("div", { class: "hint" }, "Escolha uma sugestão ou digite outra.")),
+    h("div", { class: "field" }, h("label", { class: "lbl" }, "Turno"), turnoChips),
+    h("div", { class: "field" }, h("label", { class: "lbl" }, "Título (opcional)"), title), preview);
+  upd();
+
+  /* bloco 2: seções */
   const list = h("div", {});
-  const drawSecs = () => {
-    list.replaceChildren(...drafts.map((d, i) => {
-      const t = h("input", { type: "text", maxlength: "120", placeholder: `Título da seção ${i + 1} (ex.: Usinagem de Eixos A)`, value: d.title }); t.addEventListener("input", () => (d.title = t.value));
-      const pv = h("div", {}); const showPv = () => { pv.replaceChildren(); const src = d.file ? URL.createObjectURL(d.file) : d.removed ? null : d.img; if (src) pv.append(h("img", { src, alt: "" })); };
-      const f = h("input", { type: "file", accept: "image/*" });
-      f.addEventListener("change", async () => { if (!f.files[0]) return; try { d.file = await resizeImage(f.files[0]); d.removed = false; showPv(); } catch (e) { alert(e.message); } });
-      showPv();
-      return h("div", { class: "secrow" }, h("b", {}, `Seção ${i + 1}`), t, h("div", { class: "r" }, f, h("button", { class: "btn ghost sm", type: "button", onclick: () => { d.file = null; d.removed = true; f.value = ""; showPv(); } }, "Remover imagem")), pv);
-    }));
-  };
+  const drawSecs = () => list.replaceChildren(...drafts.map((d, i) => {
+    const t = h("input", { type: "text", maxlength: "120", placeholder: "Nome do projeto (ex.: Usinagem de Eixos A)", value: d.title }); t.addEventListener("input", () => (d.title = t.value));
+    const pv = h("div", { class: "thumb" });
+    const showPv = () => { pv.replaceChildren(); const src = d.file ? URL.createObjectURL(d.file) : d.removed ? null : d.img; pv.append(src ? h("img", { src, alt: "" }) : h("span", {}, "Sem imagem")); };
+    const f = h("input", { type: "file", accept: "image/*", id: `f${i}`, class: "hidden" });
+    f.addEventListener("change", async () => { if (!f.files[0]) return; try { d.file = await resizeImage(f.files[0]); d.removed = false; showPv(); } catch (e) { alert(e.message); } });
+    showPv();
+    return h("div", { class: "secrow" }, h("div", { class: "secnum" }, String(i + 1)),
+      h("div", { class: "secbody" }, t, h("div", { class: "r" }, h("label", { class: "btn ghost sm", for: `f${i}` }, "📷 Escolher imagem"), f,
+        h("button", { class: "btn ghost sm", type: "button", onclick: () => { d.file = null; d.removed = true; f.value = ""; showPv(); } }, "Remover")), ),
+      pv);
+  }));
   drawSecs();
+  const b2 = h("div", { class: "block" }, h("p", { class: "hint", style: "margin-top:0" }, "Cada seção aparece como uma página para o participante, começando pela imagem do projeto."), list,
+    h("div", { class: "r", style: "display:flex;gap:10px;margin-top:6px" },
+      h("button", { class: "btn ghost sm", type: "button", onclick: () => { if (drafts.length < 12) { drafts.push({ title: "", img: null, file: null, removed: false }); drawSecs(); } } }, "＋ Adicionar seção"),
+      h("button", { class: "btn ghost sm", type: "button", onclick: () => { if (drafts.length > 1 && confirm("Remover a última seção? Os votos dela serão apagados ao salvar.")) { drafts.pop(); drawSecs(); } } }, "− Remover última")));
+
+  /* bloco 3: perguntas */
+  const b3 = h("div", { class: "block" }, h("p", { class: "hint", style: "margin-top:0" }, "As mesmas perguntas valem para todas as seções. Cada uma recebe nota de 1 a 5 estrelas."), qs);
+
   const err = h("div", { class: "err-text" });
-  const submit = h("button", { class: "btn", type: "button" }, edit ? "Salvar alterações" : "Criar votação");
-  submit.addEventListener("click", async () => {
-    err.textContent = ""; submit.disabled = true; submit.textContent = "Salvando…";
+  const save = async (btn, label) => {
+    err.textContent = "";
+    if (!v.categoria.trim()) { err.textContent = "Informe a categoria."; return; }
+    if (!qs.value.split("\n").some((x) => x.trim())) { err.textContent = "Escreva ao menos uma pergunta."; return; }
+    btn.disabled = true; btn.textContent = "Salvando…";
     try {
-      const body = JSON.stringify({ rodada: rodada.value, categoria: cat.value, turno: turno.value, title: title.value, sections: drafts.map((d) => ({ title: d.title })), questions: qs.value.split("\n") });
+      const body = JSON.stringify({ rodada: v.rodada, categoria: v.categoria, turno: v.turno, title: v.title, sections: drafts.map((d) => ({ title: d.title })), questions: qs.value.split("\n") });
       const poll = edit ? (await api(`/api/polls/${p.id}`, { method: "PUT", body }), p) : await api("/api/polls", { method: "POST", body });
       for (let i = 0; i < drafts.length; i++) {
-        const d = drafts[i];
-        if (d.file) await api(`/api/polls/${poll.id}/image/${i}`, { method: "PUT", body: d.file, headers: { "content-type": "image/jpeg" } });
-        else if (d.removed && d.img) await api(`/api/polls/${poll.id}/image/${i}`, { method: "DELETE" });
+        const d = drafts[i], put = (blob) => api(`/api/polls/${poll.id}/image/${i}`, { method: "PUT", body: blob, headers: { "content-type": blob.type || "image/jpeg" } });
+        if (d.file) await put(d.file);
+        else if (d.removed && d.img && edit) await api(`/api/polls/${poll.id}/image/${i}`, { method: "DELETE" });
+        else if (dup && d.img && !d.removed) await put(await (await fetch(d.img)).blob());
       }
-      A.sel = poll.id; A.view = "poll"; A.tab = edit ? "editar" : "qr"; renderAll();
-    } catch (e) { err.textContent = e.message; submit.disabled = false; submit.textContent = edit ? "Salvar alterações" : "Criar votação"; }
-  });
-  const extra = [];
+      A.sel = poll.id; A.view = "poll";
+      if (edit) { A.tab = "config"; const bt = $("#savedmsg"); btn.disabled = false; btn.textContent = label; if (bt) { bt.textContent = "✓ Alterações salvas"; setTimeout(() => (bt.textContent = ""), 2500); } renderHead(); renderSide(); }
+      else { A.tab = "qr"; A.flash = "created"; renderAll(); }
+    } catch (e) { err.textContent = e.message; btn.disabled = false; btn.textContent = label; }
+  };
+
   if (edit) {
-    extra.push(h("button", { class: "btn ghost", type: "button", onclick: () => api(`/api/polls/${p.id}`, { method: "PUT", body: JSON.stringify({ status: p.status === "open" ? "closed" : "open" }) }).catch((e) => alert(e.message)) }, p.status === "open" ? "Encerrar votação" : "Reabrir votação"));
-    extra.push(h("button", { class: "btn danger", type: "button", onclick: () => { if (confirm(`Excluir “${p.title}”?\n\nTodos os votos e participantes serão apagados. Esta ação não pode ser desfeita.`)) api(`/api/polls/${p.id}`, { method: "DELETE" }).catch((e) => alert(e.message)); } }, "Excluir"));
+    const sv = h("button", { class: "btn", type: "button" }, "Salvar alterações"); sv.addEventListener("click", () => save(sv, "Salvar alterações"));
+    const closed = p.status === "closed";
+    return h("div", {},
+      h("h3", { class: "bh" }, "1 · Dados"), b1, h("h3", { class: "bh" }, "2 · Seções e imagens"), b2, h("h3", { class: "bh" }, "3 · Perguntas"), b3, err,
+      h("div", { class: "actions" }, sv, h("span", { id: "savedmsg", class: "small" }), h("span", { style: "flex:1" }),
+        h("button", { class: "btn ghost", type: "button", onclick: () => { A.dupFrom = p; A.view = "new"; renderAll(); } }, "⧉ Duplicar (ex.: outro turno)"),
+        h("button", { class: "btn danger", type: "button", onclick: () => { if (confirm(`Excluir “${p.title}”?\n\nTodos os votos e participantes serão apagados. Esta ação não pode ser desfeita.`)) api(`/api/polls/${p.id}`, { method: "DELETE" }).catch((e) => alert(e.message)); } }, "Excluir")));
   }
-  return h("div", {}, edit ? null : h("h2", { style: "margin-bottom:14px" }, "Nova votação"), dl,
-    h("div", { class: "formgrid" }, h("div", {}, h("label", { class: "lbl" }, "Rodada"), rodada), h("div", {}, h("label", { class: "lbl" }, "Categoria"), cat), h("div", {}, h("label", { class: "lbl" }, "Turno"), turno)),
-    h("div", { style: "margin-bottom:14px" }, h("label", { class: "lbl" }, "Título"), title),
-    h("label", { class: "lbl" }, `Seções (${drafts.length}) — cada uma com sua imagem`), list,
-    h("div", { class: "r", style: "display:flex;gap:10px;margin:6px 0 16px" },
-      h("button", { class: "btn ghost sm", type: "button", onclick: () => { if (drafts.length < 12) { drafts.push({ title: "", img: null, file: null, removed: false }); drawSecs(); } } }, "+ Adicionar seção"),
-      h("button", { class: "btn ghost sm", type: "button", onclick: () => { if (drafts.length > 1 && confirm("Remover a última seção? Os votos dela serão apagados ao salvar.")) { drafts.pop(); drawSecs(); } } }, "− Remover última")),
-    h("label", { class: "lbl" }, "Perguntas (uma por linha, notas de 1 a 5)"), qs,
-    err, h("div", { class: "actions" }, submit, ...extra));
+
+  /* assistente em 3 passos */
+  const names = ["Dados", "Seções e imagens", "Perguntas"], blocks = [b1, b2, b3];
+  let step = 0;
+  const wrap = h("div", {});
+  const draw = () => {
+    wrap.replaceChildren(...[
+      h("h2", { style: "margin:0 0 4px" }, dup ? "Duplicar formulário" : "Novo formulário"),
+      dup ? h("p", { class: "small", style: "margin:0 0 6px" }, `Copiando de “${base.title}”. Ajuste o que mudou (por exemplo, o turno).`) : null,
+      h("ol", { class: "stepper" }, names.map((n, i) => h("li", { class: i === step ? "on" : i < step ? "done" : "", onclick: () => { if (i <= step) { step = i; draw(); } } }, h("span", {}, i < step ? "✓" : String(i + 1)), n))),
+      blocks[step], err,
+      h("div", { class: "nav", style: "margin-top:20px" },
+        step > 0 ? h("button", { class: "btn ghost", type: "button", onclick: () => { err.textContent = ""; step--; draw(); } }, "Voltar") : h("button", { class: "btn ghost", type: "button", onclick: () => { A.view = "poll"; renderAll(); } }, "Cancelar"),
+        step < 2 ? h("button", { class: "btn", type: "button", onclick: () => { if (step === 0 && !v.categoria.trim()) { err.textContent = "Informe a categoria."; return; } err.textContent = ""; step++; draw(); window.scrollTo({ top: 0, behavior: "smooth" }); } }, "Continuar")
+          : (() => { const b = h("button", { class: "btn", type: "button" }, "✓ Criar formulário e gerar QR"); b.addEventListener("click", () => save(b, "✓ Criar formulário e gerar QR")); return b; })())].filter(Boolean));
+  };
+  draw();
+  return wrap;
 }
 
 /* ---------- início ---------- */

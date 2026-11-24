@@ -59,7 +59,7 @@ export default {
     }
 
     // Páginas
-    if (p === "/admin" || p === "/admin/") return env.ASSETS.fetch(new Request(new URL("/admin/", url), request));
+    if (p === "/admin" || p === "/admin/") return Response.redirect(new URL("/", url).toString(), 302);
     if (/^\/v\/[a-z0-9]+\/?$/.test(p)) return env.ASSETS.fetch(new Request(new URL("/v/", url), request));
     return env.ASSETS.fetch(request);
   },
