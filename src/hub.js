@@ -25,6 +25,19 @@ const MAX_IMAGE = 1_900_000; // bytes (limite de linha do SQLite do DO é 2 MB)
 const MAX_PARTICIPANTS = 3000;
 const MAX_PDF = 20 * 1024 * 1024; // PDF completo da seção (guardado em pedaços)
 const MAX_USERS = 1000;
+const HEX = /^#[0-9a-fA-F]{6}$/;
+// estilo da página de votação: "azul" (padrão), "ouro" (preto e dourado) ou "custom" (cores escolhidas)
+function cleanTheme(t) {
+  const preset = ["azul", "ouro", "custom"].includes(t?.preset) ? t.preset : "azul";
+  const out = { preset };
+  if (preset === "custom") {
+    out.accent = HEX.test(t.accent) ? t.accent.toLowerCase() : "#0e7fc0";
+    out.bg = HEX.test(t.bg) ? t.bg.toLowerCase() : "#0a72bb";
+    out.dark = !!t.dark;
+  }
+  return out;
+}
+function parseTheme(raw) { try { return cleanTheme(raw ? JSON.parse(raw) : null); } catch { return cleanTheme(null); } }
 const DEF_BIG = "10", DEF_SUB = "Anos · Olimpíadas"; // banner padrão (a imagem do banner fica em images com sec = -1)
 const CHUNK = 1_500_000;           // cada linha do SQLite do DO aceita até 2 MB
 
@@ -59,6 +72,11 @@ export class Hub extends DurableObject {
       x(`ALTER TABLE polls ADD COLUMN banner_big TEXT`);
       x(`ALTER TABLE polls ADD COLUMN banner_sub TEXT`);
     }
+    // migração: estilo (tema) do formulário e seções já enviadas (travadas) por participante
+    if (!this.q("PRAGMA table_info(polls)").some((c) => c.name === "theme")) x(`ALTER TABLE polls ADD COLUMN theme TEXT`);
+    x(`CREATE TABLE IF NOT EXISTS sent (
+         pid TEXT NOT NULL, poll_id TEXT NOT NULL, sec INTEGER NOT NULL, at INTEGER NOT NULL,
+         PRIMARY KEY (pid, sec))`);
     x(`CREATE TABLE IF NOT EXISTS users (
          id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
          salt TEXT NOT NULL, hash TEXT NOT NULL, created_at INTEGER NOT NULL)`);
@@ -128,6 +146,7 @@ export class Hub extends DurableObject {
     return {
       id: r.id, rodada: r.rodada, categoria: r.categoria, turno: r.turno, title: r.title,
       status: r.status, sections, questions: JSON.parse(r.questions),
+      theme: parseTheme(r.theme),
       banner: { big: r.banner_big ?? DEF_BIG, sub: r.banner_sub ?? DEF_SUB, img: vers[-1] != null ? `/img/${r.id}/-1?v=${vers[-1]}` : null },
     };
   }
@@ -147,7 +166,8 @@ export class Hub extends DurableObject {
     const online = this.onlineMap(r.id, exclude);
     return this.q(
       `SELECT p.id, p.name, p.joined_at, p.status, p.annulled,
-              (SELECT COUNT(*) FROM votes v WHERE v.pid = p.id) AS answered
+              (SELECT COUNT(*) FROM votes v WHERE v.pid = p.id) AS answered,
+              (SELECT COUNT(*) FROM sent s WHERE s.pid = p.id) AS sent
          FROM participants p WHERE p.poll_id=? ORDER BY p.joined_at`, r.id,
     ).map((p) => ({ ...p, total, online: online.has(p.id) }));
   }
@@ -208,7 +228,8 @@ export class Hub extends DurableObject {
     const title = clean(b.title, 120) || [rodada, categoria, turno].filter(Boolean).join(" ");
     const bannerBig = b.bannerBig === undefined ? DEF_BIG : clean(b.bannerBig, 12);
     const bannerSub = b.bannerSub === undefined ? DEF_SUB : clean(b.bannerSub, 40);
-    return { rodada, categoria, turno, title, sections, questions, bannerBig, bannerSub };
+    const theme = cleanTheme(b.theme);
+    return { rodada, categoria, turno, title, sections, questions, bannerBig, bannerSub, theme };
   }
 
   /* ------------------------------ HTTP ------------------------------ */
@@ -283,9 +304,9 @@ export class Hub extends DurableObject {
       const d = this.parsePoll(b);
       const id = rid(8);
       this.sql.exec(
-        `INSERT INTO polls (id, rodada, categoria, turno, title, status, sections, questions, created_at, owner, banner_big, banner_sub)
-         VALUES (?,?,?,?,?,'open',?,?,?,?,?,?)`,
-        id, d.rodada, d.categoria, d.turno, d.title, JSON.stringify(d.sections), JSON.stringify(d.questions), Date.now(), admin ? "admin" : uid, d.bannerBig, d.bannerSub);
+        `INSERT INTO polls (id, rodada, categoria, turno, title, status, sections, questions, created_at, owner, banner_big, banner_sub, theme)
+         VALUES (?,?,?,?,?,'open',?,?,?,?,?,?,?)`,
+        id, d.rodada, d.categoria, d.turno, d.title, JSON.stringify(d.sections), JSON.stringify(d.questions), Date.now(), admin ? "admin" : uid, d.bannerBig, d.bannerSub, JSON.stringify(d.theme));
       const row = this.pollRow(id);
       const poll = this.adminPoll(row);
       this.toAdmins({ t: "poll", poll }, row.owner);
@@ -301,11 +322,12 @@ export class Hub extends DurableObject {
         const d = this.parsePoll({ ...JSON.parse(JSON.stringify({
           rodada: r.rodada, categoria: r.categoria, turno: r.turno, title: r.title,
           sections: JSON.parse(r.sections), questions: JSON.parse(r.questions),
-          bannerBig: r.banner_big ?? DEF_BIG, bannerSub: r.banner_sub ?? DEF_SUB })), ...b });
+          bannerBig: r.banner_big ?? DEF_BIG, bannerSub: r.banner_sub ?? DEF_SUB, theme: parseTheme(r.theme) })), ...b });
         const status = b.status === "closed" ? "closed" : b.status === "open" ? "open" : r.status;
         this.sql.exec(
-          "UPDATE polls SET rodada=?, categoria=?, turno=?, title=?, status=?, sections=?, questions=?, banner_big=?, banner_sub=? WHERE id=?",
-          d.rodada, d.categoria, d.turno, d.title, status, JSON.stringify(d.sections), JSON.stringify(d.questions), d.bannerBig, d.bannerSub, id);
+          "UPDATE polls SET rodada=?, categoria=?, turno=?, title=?, status=?, sections=?, questions=?, banner_big=?, banner_sub=?, theme=? WHERE id=?",
+          d.rodada, d.categoria, d.turno, d.title, status, JSON.stringify(d.sections), JSON.stringify(d.questions), d.bannerBig, d.bannerSub, JSON.stringify(d.theme), id);
+        this.sql.exec("DELETE FROM sent WHERE poll_id=? AND sec>=?", id, d.sections.length);
         this.sql.exec("DELETE FROM votes WHERE poll_id=? AND (sec>=? OR q>=?)", id, d.sections.length, d.questions.length);
         this.sql.exec("DELETE FROM images WHERE poll_id=? AND sec>=?", id, d.sections.length);
         this.dropDoc(id, d.sections.length);
@@ -315,7 +337,7 @@ export class Hub extends DurableObject {
       if (method === "DELETE") {
         this.toVoters(id, { t: "denied", reason: "deleted" });
         for (const ws of this.ctx.getWebSockets("p:" + id)) { try { ws.close(4404, "deleted"); } catch {} }
-        for (const t of ["votes", "participants", "images"]) this.sql.exec(`DELETE FROM ${t} WHERE poll_id=?`, id);
+        for (const t of ["votes", "participants", "images", "sent"]) this.sql.exec(`DELETE FROM ${t} WHERE poll_id=?`, id);
         this.dropDoc(id);
         this.sql.exec("DELETE FROM polls WHERE id=?", id);
         this.toAdmins({ t: "deleted", poll: id }, r.owner);
@@ -372,6 +394,16 @@ export class Hub extends DurableObject {
         this.pushPoll(id);
         return json({ ok: true });
       }
+    }
+
+    // respostas de uma pessoa (o organizador abre clicando no nome)
+    if ((m = path.match(/^\/api\/polls\/([a-z0-9]+)\/participants\/([0-9a-f-]{36})\/answers$/)) && method === "GET") {
+      const [, id, pid] = m;
+      const p = this.q("SELECT id, name, status, annulled, joined_at FROM participants WHERE id=? AND poll_id=?", pid, id)[0];
+      if (!p) return json({ error: "not_found" }, 404);
+      const votes = {};
+      for (const v of this.q("SELECT sec, q, value FROM votes WHERE pid=?", pid)) votes[`${v.sec}_${v.q}`] = v.value;
+      return json({ ...p, votes, sent: this.q("SELECT sec FROM sent WHERE pid=? ORDER BY sec", pid).map((r) => r.sec) });
     }
 
     if ((m = path.match(/^\/api\/polls\/([a-z0-9]+)\/participants\/([0-9a-f-]{36})\/(kick|unkick|annul|restore)$/)) && method === "POST") {
@@ -459,6 +491,7 @@ export class Hub extends DurableObject {
         try { ws.send(JSON.stringify({ t: "denied", reason: "removed" })); ws.close(4401, "removed"); } catch {}
       }
       this.sql.exec("DELETE FROM votes WHERE pid=?", pid);
+      this.sql.exec("DELETE FROM sent WHERE pid=?", pid);
       this.sql.exec("DELETE FROM participants WHERE id=? AND poll_id=?", pid, pollId);
     }
     this.pushLive(pollId);
@@ -495,7 +528,8 @@ export class Hub extends DurableObject {
       server.serializeAttachment({ pid: p.id });
       const votes = {};
       for (const v of this.q("SELECT sec, q, value FROM votes WHERE pid=?", p.id)) votes[`${v.sec}_${v.q}`] = v.value;
-      server.send(JSON.stringify({ t: "hello", poll: this.publicPoll(r), name: p.name, votes }));
+      const sent = this.q("SELECT sec FROM sent WHERE pid=? ORDER BY sec", p.id).map((x) => x.sec);
+      server.send(JSON.stringify({ t: "hello", poll: this.publicPoll(r), name: p.name, votes, sent }));
       this.pushLive(pollId);
     }
     return new Response(null, { status: 101, webSocket: client });
@@ -506,7 +540,7 @@ export class Hub extends DurableObject {
     if (msg?.t === "ping") { try { ws.send('{"t":"pong"}'); } catch {} return; }
     if (!this.ctx.getTags(ws).some((t) => t.startsWith("p:"))) return; // painel só escuta
     const a = ws.deserializeAttachment();
-    if (!a?.pid || msg?.t !== "vote") return;
+    if (!a?.pid || (msg?.t !== "vote" && msg?.t !== "submit")) return;
 
     const p = this.q(
       `SELECT p.status AS pstatus, p.poll_id, l.status AS lstatus, l.sections, l.questions
@@ -515,11 +549,23 @@ export class Hub extends DurableObject {
     if (p.pstatus !== "active") { ws.send('{"t":"kicked"}'); try { ws.close(4403, "kicked"); } catch {} return; }
     if (p.lstatus !== "open") { ws.send('{"t":"closed"}'); return; }
 
+    if (msg.t === "submit") { // enviar a seção: trava as notas (não dá mais para alterar)
+      const sec = Number(msg.sec), nq = JSON.parse(p.questions).length;
+      if (!Number.isInteger(sec) || sec < 0 || sec >= JSON.parse(p.sections).length) return;
+      if (this.q("SELECT 1 AS x FROM sent WHERE pid=? AND sec=?", a.pid, sec).length) { ws.send(JSON.stringify({ t: "sent", sec })); return; }
+      if (this.q("SELECT COUNT(*) AS n FROM votes WHERE pid=? AND sec=? AND q<?", a.pid, sec, nq)[0].n < nq) { ws.send(JSON.stringify({ t: "incomplete", sec })); return; }
+      this.sql.exec("INSERT INTO sent (pid, poll_id, sec, at) VALUES (?,?,?,?)", a.pid, p.poll_id, sec, Date.now());
+      ws.send(JSON.stringify({ t: "sent", sec }));
+      this.pushLive(p.poll_id);
+      return;
+    }
+
     const sec = Number(msg.sec), q = Number(msg.q), value = Number(msg.value);
     if (!Number.isInteger(sec) || !Number.isInteger(q) || !Number.isInteger(value)) return;
     if (value < 1 || value > 5) return;
     if (sec < 0 || sec >= JSON.parse(p.sections).length || q < 0 || q >= JSON.parse(p.questions).length) return;
 
+    if (this.q("SELECT 1 AS x FROM sent WHERE pid=? AND sec=?", a.pid, sec).length) { ws.send(JSON.stringify({ t: "locked", sec, q })); return; }
     this.sql.exec("INSERT OR REPLACE INTO votes (pid, poll_id, sec, q, value) VALUES (?,?,?,?,?)", a.pid, p.poll_id, sec, q, value);
     ws.send(JSON.stringify({ t: "ack", sec, q, value }));
     this.pushLive(p.poll_id);

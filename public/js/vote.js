@@ -2,7 +2,7 @@
 const pollId = location.pathname.split("/")[2];
 const KEY = "olp:" + pollId;
 const ESCALA = ["Muito fraco", "Fraco", "Regular", "Bom", "Excelente"];
-const S = { poll: null, token: null, name: null, votes: {}, step: 0, conn: "off", dead: null, sock: null, nameErr: "", busy: false };
+const S = { poll: null, token: null, name: null, votes: {}, step: 0, conn: "off", dead: null, sock: null, nameErr: "", busy: false, sent: new Set(), pending: null, sendErr: "" };
 const root = $("#root");
 
 const save = () => { try { localStorage.setItem(KEY, JSON.stringify({ token: S.token, name: S.name })); } catch {} };
@@ -11,6 +11,8 @@ const closed = () => S.poll?.status === "closed";
 const nSec = () => S.poll.sections.length;
 const nQ = () => S.poll.questions.length;
 const getV = (i, j) => S.votes[`${i}_${j}`] || 0;
+const firstUnsent = () => { for (let i = 0; i < nSec(); i++) if (!S.sent.has(i)) return i; return -1; };
+const theme = () => applyTheme(document.body, S.poll?.theme);
 
 /* ---------- boot ---------- */
 (async function boot() {
@@ -19,7 +21,7 @@ const getV = (i, j) => S.votes[`${i}_${j}`] || 0;
   try { r = await fetch(`/api/p/${pollId}`); } catch { return full("📡", "Sem conexão", "Não foi possível carregar a votação. Verifique sua internet e recarregue."); }
   if (r.status === 404) return full("🔎", "Votação não encontrada", "Este link ou QR code não está mais ativo.");
   S.poll = await r.json();
-  document.title = S.poll.title;
+  document.title = S.poll.title; theme();
   const st = load();
   if (st?.token) {
     const j = await join({ token: st.token });
@@ -43,18 +45,30 @@ function start() {
     onstatus: (s) => { S.conn = s; renderTop(); },
     onmessage: (m) => {
       if (m.t === "hello") {
-        S.poll = m.poll;
+        S.poll = m.poll; theme();
+        S.sent = new Set(m.sent || []);
         const local = S.votes; S.votes = { ...m.votes, ...local };
-        for (const [k, v] of Object.entries(local)) if (m.votes[k] !== v) { const [sec, q] = k.split("_").map(Number); S.sock.send({ t: "vote", sec, q, value: v }); }
-        if (S.step >= nSec()) S.step = nSec() - 1;
+        for (const [k, v] of Object.entries(local)) {
+          const [sec, q] = k.split("_").map(Number);
+          if (S.sent.has(sec)) S.votes[k] = m.votes[k];                     // seção já enviada: vale o que está no servidor
+          else if (m.votes[k] !== v) S.sock.send({ t: "vote", sec, q, value: v });
+        }
+        const fu = firstUnsent();
+        if (fu === -1) S.step = "done";
+        else if (S.step === "done" || S.sent.has(S.step) || S.step < fu) S.step = fu;
         render(true);
       } else if (m.t === "poll") {
-        S.poll = m.poll; document.title = S.poll.title;
+        S.poll = m.poll; document.title = S.poll.title; theme();
         if (typeof S.step === "number" && S.step >= nSec()) S.step = nSec() - 1;
         render(true);
       } else if (m.t === "kicked") { S.sock.close(); kicked(); }
       else if (m.t === "denied") { S.sock.close(); full("🚫", m.reason === "deleted" ? "Votação encerrada" : "Acesso negado", m.reason === "deleted" ? "Esta votação foi removida pelo organizador." : "Entre novamente pelo QR code."); }
-      else if (m.t === "closed") { S.poll.status = "closed"; render(true); }
+      else if (m.t === "closed") { S.poll.status = "closed"; S.pending = null; render(true); }
+      else if (m.t === "sent") {
+        S.sent.add(m.sec);
+        if (S.pending === m.sec) { S.pending = null; S.sendErr = ""; const fu = firstUnsent(); S.step = fu === -1 ? "done" : fu; render(); }
+      } else if (m.t === "incomplete") { S.pending = null; S.sendErr = "Responda todas as perguntas desta seção antes de enviar."; render(true); }
+      else if (m.t === "locked") { S.sent.add(m.sec); render(true); }
     },
   });
 }
@@ -118,7 +132,7 @@ function viewSection(i) {
   const sec = S.poll.sections[i];
   const w = h("div", { class: closed() ? "locked" : "" });
   if (closed()) w.append(h("div", { class: "banner-closed" }, "Esta votação foi encerrada. Suas notas anteriores estão registradas, mas não é possível alterá-las."));
-  w.append(h("p", { class: "scale-note" }, "1 = muito fraco · 5 = excelente. Todas as perguntas são obrigatórias."));
+  w.append(h("p", { class: "scale-note" }, "1 = muito fraco · 5 = excelente. Todas as perguntas são obrigatórias. ", h("b", {}, "Depois de enviar a seção, as notas não podem ser alteradas.")));
   const img = sec.img
     ? h("button", { class: "img", type: "button", "aria-label": "Ampliar imagem", onclick: () => { $("#lb img").src = sec.img; $("#lb").classList.add("open"); } },
         h("img", { src: sec.img, alt: sec.title || `Seção ${i + 1}` }), h("span", { class: "zoom" }, "🔍 ampliar"))
@@ -127,15 +141,20 @@ function viewSection(i) {
   w.append(h("div", { class: "figure" }, h("div", { class: "cap" }, h("div", {}, sec.title || `Seção ${i + 1}`), pdfBtn), img));
   S.poll.questions.forEach((q, j) => w.append(question(i, j, q)));
   const last = i === nSec() - 1;
-  w.append(h("div", { class: "nav" },
-    i > 0 ? h("button", { class: "btn ghost", type: "button", onclick: () => { S.step = i - 1; render(); } }, "Voltar") : h("span"),
-    h("div", { class: "dots" }, Array.from({ length: nSec() }, (_, k) => h("i", { class: k === i ? "cur" : k < i ? "done" : "" }))),
-    h("button", { class: "btn", type: "button", onclick: () => {
-      const miss = []; for (let j = 0; j < nQ(); j++) if (!getV(i, j)) miss.push(j);
-      const qs = document.querySelectorAll(".q"); qs.forEach((el, j) => el.classList.toggle("err", miss.includes(j)));
-      if (miss.length) { qs[miss[0]].scrollIntoView({ behavior: "smooth", block: "center" }); return; }
-      S.step = last ? "done" : i + 1; render();
-    } }, last ? "Enviar" : "Próximo")));
+  const sending = S.pending === i;
+  const send = h("button", { class: "btn", type: "button", disabled: sending, onclick: () => {
+    const miss = []; for (let j = 0; j < nQ(); j++) if (!getV(i, j)) miss.push(j);
+    const qs = document.querySelectorAll(".q"); qs.forEach((el, j) => el.classList.toggle("err", miss.includes(j)));
+    if (miss.length) { qs[miss[0]].scrollIntoView({ behavior: "smooth", block: "center" }); return; }
+    if (!confirm(`Enviar as notas desta seção?\n\nDepois de enviar não será possível voltar nem alterar.`)) return;
+    S.sendErr = ""; S.pending = i;
+    if (!S.sock?.send({ t: "submit", sec: i })) { S.pending = null; S.sendErr = "Sem conexão. Aguarde reconectar e tente de novo."; }
+    else setTimeout(() => { if (S.pending === i) { S.pending = null; S.sendErr = "Não foi possível enviar agora. Tente novamente."; render(true); } }, 8000);
+    render(true);
+  } }, sending ? "Enviando…" : last ? "Enviar" : "Enviar e continuar");
+  w.append(h("div", { class: "err-text", style: "text-align:right;margin-top:14px" }, S.sendErr));
+  if (!closed()) w.append(h("div", { class: "nav", style: "margin-top:12px" },
+    h("div", { class: "dots" }, Array.from({ length: nSec() }, (_, k) => h("i", { class: k === i ? "cur" : k < i ? "done" : "" }))), send));
   return w;
 }
 
@@ -166,7 +185,7 @@ function viewDone() {
     h("p", {}, `${S.poll.rodada} · ${S.poll.categoria}${S.poll.turno ? " · " + S.poll.turno : ""}`),
     h("p", {}, `Obrigado, ${S.name}. Suas notas foram registradas.`),
     S.conn !== "on" ? h("div", { class: "notice" }, "Você está sem conexão no momento. As notas serão enviadas assim que a internet voltar — mantenha esta página aberta.") : null,
-    !closed() ? h("div", { style: "margin-top:22px" }, h("button", { class: "btn ghost", type: "button", onclick: () => { S.step = 0; render(); } }, "Revisar respostas")) : null);
+    h("p", { class: "small", style: "margin-top:16px" }, "As notas enviadas não podem ser alteradas."));
 }
 
 $("#lb").addEventListener("click", () => $("#lb").classList.remove("open"));

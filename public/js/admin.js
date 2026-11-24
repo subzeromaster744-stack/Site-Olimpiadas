@@ -87,10 +87,11 @@ function connect() {
       } else if (m.t === "live") {
         const p = A.polls.get(m.poll); if (!p) return;
         p.participants = m.participants; p.results = m.results;
+        if (A.detail && A.detail.poll === m.poll) refreshDetail();
         renderSide(); renderBar();
         if (A.sel === m.poll && A.view === "poll") { renderHead(); renderTabs(); if (["live", "resultados", "bloqueados"].includes(A.tab)) renderTab(); }
       } else if (m.t === "deleted") {
-        A.polls.delete(m.poll);
+        A.polls.delete(m.poll); if (A.detail?.poll === m.poll) closeDetail();
         if (A.sel === m.poll) { A.sel = A.polls.keys().next().value || null; A.view = "poll"; A.tab = "live"; }
         renderAll();
       }
@@ -185,9 +186,10 @@ function tabLive(p) {
     for (const x of active) {
       tb.append(h("tr", { class: x.annulled ? "annulled" : "" },
         h("td", {}, h("span", { class: "dot " + (x.online ? "on" : "") }), " ", x.online ? "Online" : "Offline"),
-        h("td", {}, h("b", {}, x.name), x.annulled ? h("span", { class: "chip closed", style: "margin-left:8px" }, "respostas anuladas") : null), h("td", {}, hhmm(x.joined_at)),
+        h("td", {}, nameLink(p, x), x.annulled ? h("span", { class: "chip closed", style: "margin-left:8px" }, "respostas anuladas") : null), h("td", {}, hhmm(x.joined_at)),
         h("td", { style: "min-width:140px" }, h("div", { class: "pbar" }, h("i", { style: `width:${Math.round((x.answered / x.total) * 100)}%` })), h("span", { class: "small" }, `${x.answered}/${x.total} respostas`)),
         h("td", { class: "c acts" },
+          h("button", { class: "btn ghost sm", type: "button", onclick: () => showAnswers(p, x) }, "Ver respostas"),
           x.annulled
             ? h("button", { class: "btn ghost sm", type: "button", onclick: () => act(p, x, "restore") }, "Restaurar respostas")
             : h("button", { class: "btn ghost sm", type: "button", onclick: () => annul(p, x) }, "Anular respostas"),
@@ -199,6 +201,38 @@ function tabLive(p) {
     h("a", { href: "#", onclick: (e) => { e.preventDefault(); A.tab = "bloqueados"; renderTabs(); renderTab(); } }, "Ver lista de bloqueados")));
   return w;
 }
+/* ---------- respostas de uma pessoa ---------- */
+const nameLink = (p, x) => h("a", { href: "#", class: "plink", title: "Ver as respostas desta pessoa", onclick: (e) => { e.preventDefault(); showAnswers(p, x); } }, x.name);
+function showAnswers(p, x) { A.detail = { poll: p.id, pid: x.id }; refreshDetail(true); }
+function closeDetail() { A.detail = null; $("#modal")?.remove(); }
+async function refreshDetail(first) {
+  const d = A.detail; if (!d) return;
+  const p = A.polls.get(d.poll); if (!p) return closeDetail();
+  let r;
+  try { r = await api(`/api/polls/${d.poll}/participants/${d.pid}/answers`); } catch (e) { if (first) alert(e.message); return closeDetail(); }
+  if (A.detail !== d) return;
+  const val = (i, j) => r.votes[`${i}_${j}`] || 0;
+  const tot = p.sections.map((_, i) => p.questions.reduce((t, _q, j) => t + val(i, j), 0));
+  const all = tot.reduce((a, b) => a + b, 0), answered = Object.keys(r.votes).length, totalQ = p.sections.length * p.questions.length;
+  const head = h("tr", {}, h("th", {}, "Pergunta"), p.sections.map((s, i) => h("th", { class: "c" }, s.title || `Seção ${i + 1}`,
+    s.competitor ? h("div", { class: "comp" }, s.competitor) : null, h("div", { class: "sentflag " + (r.sent.includes(i) ? "yes" : "") }, r.sent.includes(i) ? "✓ enviada" : "não enviada"))));
+  const body = h("tbody", {}, p.questions.map((q, j) => h("tr", {}, h("td", {}, q), p.sections.map((_, i) => h("td", { class: "c" }, val(i, j) ? `★ ${val(i, j)}` : "–")))));
+  const foot = h("tr", {}, h("td", {}, h("b", {}, "Soma da seção")), tot.map((t) => h("td", { class: "c" }, h("b", {}, t || "–"))));
+  const chipsRow = h("div", { style: "margin:6px 0 12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center" },
+    r.status === "kicked" ? h("span", { class: "chip closed" }, "bloqueado") : null,
+    r.annulled ? h("span", { class: "chip closed" }, "respostas anuladas — não contam nos resultados") : null,
+    h("span", { class: "small" }, `${answered}/${totalQ} respostas · entrou às ${hhmm(r.joined_at)} · soma total: `, h("b", {}, String(all))));
+  $("#modal")?.remove();
+  const modal = h("div", { class: "modal", id: "modal", onclick: (e) => e.target.id === "modal" && closeDetail() },
+    h("div", { class: "card modalbox" },
+      h("div", { class: "head2", style: "align-items:center" }, h("h2", {}, r.name), h("button", { class: "btn ghost sm", type: "button", onclick: closeDetail }, "Fechar")),
+      chipsRow,
+      h("div", { style: "overflow-x:auto" }, h("table", { class: "t" }, h("thead", {}, head), body, h("tfoot", {}, foot))),
+      h("p", { class: "small", style: "margin-top:10px" }, "Atualiza sozinho enquanto a pessoa responde.")));
+  document.body.append(modal);
+}
+document.addEventListener("keydown", (e) => e.key === "Escape" && A.detail && closeDetail());
+
 /* ---------- bloqueados ---------- */
 function tabBlocked(p) {
   const kicked = p.participants.filter((x) => x.status === "kicked");
@@ -210,7 +244,7 @@ function tabBlocked(p) {
       h("button", { class: "btn danger sm", type: "button", onclick: () => deleteKicked(p, kicked) }, "🗑 Apagar todos")),
     h("div", { style: "overflow-x:auto" }, h("table", { class: "t" },
       h("thead", {}, h("tr", {}, ["Nome", "Entrou às", "Respostas dadas", ""].map((c) => h("th", {}, c)))),
-      h("tbody", {}, kicked.map((x) => h("tr", {}, h("td", {}, h("b", {}, x.name)), h("td", {}, hhmm(x.joined_at)), h("td", {}, `${x.answered}/${x.total}`),
+      h("tbody", {}, kicked.map((x) => h("tr", {}, h("td", {}, nameLink(p, x)), h("td", {}, hhmm(x.joined_at)), h("td", {}, `${x.answered}/${x.total}`),
         h("td", { class: "c acts" },
           h("button", { class: "btn ghost sm", type: "button", onclick: () => act(p, x, "unkick") }, "Readmitir"),
           h("button", { class: "btn danger sm", type: "button", onclick: () => removeOne(p, x) }, "🗑 Apagar"))))))));
@@ -364,6 +398,7 @@ function formView(p, opts = {}) {
   const edit = !!p, base = p || opts.from || null, dup = !edit && !!opts.from;
   const v = { rodada: base?.rodada || RODADAS[0], categoria: base?.categoria || CATS[0], turno: base?.turno ?? TURNOS[0], title: edit ? p.title : "", bannerBig: base?.banner?.big ?? "10", bannerSub: base?.banner?.sub ?? "Anos · Olimpíadas" };
   const bn = { img: base?.banner?.img || null, file: null, removed: false };
+  v.theme = { preset: base?.theme?.preset || "azul", accent: base?.theme?.accent || "#d4a017", bg: base?.theme?.bg || "#101010", dark: base?.theme?.dark ?? true };
   const mkDraft = (s) => ({ title: s?.title || "", competitor: s?.competitor || "", img: s?.img || null, file: null, removed: false, pdf: null, pdfUrl: s?.pdf || null, pdfName: s?.pdfName || null, pdfSize: s?.pdfSize || null, pdfPages: null, pdfRemoved: false });
   const drafts = (base?.sections || Array.from({ length: 4 }, () => null)).map(mkDraft);
   const qs = h("textarea", { rows: "8", placeholder: "Uma pergunta por linha" }); qs.value = (base?.questions || DEF_Q).join("\n");
@@ -382,7 +417,28 @@ function formView(p, opts = {}) {
   const drawBanner = () => {
     const src = bn.file ? URL.createObjectURL(bn.file) : bn.removed ? null : bn.img;
     bpv.replaceChildren(bannerEl({ big: v.bannerBig, sub: v.bannerSub, img: src }));
+    applyTheme(bpv, v.theme); drawMock();
   };
+  /* estilo do formulário (cores) */
+  const tpv = h("div", { class: "themepv" });
+  const drawMock = () => {
+    const stars = h("div", { class: "stars", style: "padding:8px 0 0;max-width:230px" }, [1, 2, 3, 4, 5].map((n) => { const b = h("button", { type: "button", class: n <= 3 ? "on" : "", tabindex: "-1" }); b.innerHTML = STAR; return b; }));
+    tpv.replaceChildren(h("div", { class: "card mock" }, h("b", { class: "mt" }, "Solução do problema"), stars, h("div", { style: "margin-top:12px" }, h("button", { class: "btn sm", type: "button", tabindex: "-1" }, "Enviar e continuar"))));
+    applyTheme(tpv, v.theme);
+  };
+  const THEME_KEYS = Object.keys(THEMES), THEME_LABELS = Object.fromEntries(THEME_KEYS.map((k) => [k, THEMES[k].label]));
+  const themeChips = chips(THEME_KEYS.map((k) => THEME_LABELS[k]), () => THEME_LABELS[v.theme.preset], (l) => { v.theme.preset = THEME_KEYS.find((k) => THEME_LABELS[k] === l); drawCustom(); drawBanner(); });
+  const custom = h("div", { class: "customtheme" });
+  const drawCustom = () => {
+    custom.classList.toggle("hidden", v.theme.preset !== "custom");
+    const col = (label, key) => { const i = h("input", { type: "color", value: v.theme[key] }); i.addEventListener("input", () => { v.theme[key] = i.value; drawBanner(); }); return h("label", { class: "colorpick" }, i, h("span", {}, label)); };
+    const mode = chips(["Cartões claros", "Cartões escuros"], () => (v.theme.dark ? "Cartões escuros" : "Cartões claros"), (m) => (v.theme.dark = m === "Cartões escuros"), drawBanner);
+    custom.replaceChildren(h("div", { style: "display:flex;gap:18px;flex-wrap:wrap;margin-bottom:8px" }, col("Cor de destaque (botões, estrelas)", "accent"), col("Cor do fundo da página", "bg")), mode);
+  };
+  drawCustom();
+  const themeField = h("div", { class: "field" }, h("label", { class: "lbl" }, "Estilo do formulário"),
+    h("div", { class: "hint", style: "margin:0 0 8px" }, "Muda as cores da página que o participante vê. “Preto e dourado” é o visual do ano passado."),
+    themeChips, custom, tpv);
   const bigIn = h("input", { type: "text", maxlength: "12", value: v.bannerBig, placeholder: "Ex.: 10" });
   const subIn = h("input", { type: "text", maxlength: "40", value: v.bannerSub, placeholder: "Ex.: Anos · Olimpíadas" });
   bigIn.addEventListener("input", () => { v.bannerBig = bigIn.value; drawBanner(); });
@@ -406,7 +462,7 @@ function formView(p, opts = {}) {
     h("div", { class: "field" }, h("label", { class: "lbl" }, "Rodada"), chips(RODADAS, () => v.rodada, (r) => (v.rodada = r), upd)),
     h("div", { class: "field" }, h("label", { class: "lbl" }, "Categoria"), cat, catChips, h("div", { class: "hint" }, "Escolha uma sugestão ou digite outra.")),
     h("div", { class: "field" }, h("label", { class: "lbl" }, "Turno"), turnoChips),
-    h("div", { class: "field" }, h("label", { class: "lbl" }, "Título (opcional)"), title), preview, bannerField);
+    h("div", { class: "field" }, h("label", { class: "lbl" }, "Título (opcional)"), title), preview, themeField, bannerField);
   upd();
 
   /* bloco 2: seções */
@@ -460,7 +516,7 @@ function formView(p, opts = {}) {
     if (!qs.value.split("\n").some((x) => x.trim())) { err.textContent = "Escreva ao menos uma pergunta."; return; }
     btn.disabled = true; btn.textContent = "Salvando…";
     try {
-      const body = JSON.stringify({ rodada: v.rodada, categoria: v.categoria, turno: v.turno, title: v.title, bannerBig: v.bannerBig, bannerSub: v.bannerSub, sections: drafts.map((d) => ({ title: d.title, competitor: d.competitor })), questions: qs.value.split("\n") });
+      const body = JSON.stringify({ rodada: v.rodada, categoria: v.categoria, turno: v.turno, title: v.title, bannerBig: v.bannerBig, bannerSub: v.bannerSub, theme: v.theme, sections: drafts.map((d) => ({ title: d.title, competitor: d.competitor })), questions: qs.value.split("\n") });
       const poll = edit ? (await api(`/api/polls/${p.id}`, { method: "PUT", body }), p) : await api("/api/polls", { method: "POST", body });
       const putBanner = (blob) => api(`/api/polls/${poll.id}/image/-1`, { method: "PUT", body: blob, headers: { "content-type": blob.type || "image/jpeg" } });
       if (bn.file) await putBanner(bn.file);

@@ -249,6 +249,44 @@ ok(csv.status === 200 && (await csv.text()).includes("Maria Silva"), "exportar C
   wa.ws.close(); wb.ws.close();
 }
 
+
+// ---------- enviar trava a seção, respostas por pessoa, estilo ----------
+{
+  let x3 = await J("/api/polls", { method: "POST", headers: { ...AH, "content-type": "application/json" }, body: JSON.stringify({
+    title: "Trava", questions: ["A", "B"], sections: [{ title: "S1", competitor: "Zé" }, { title: "S2" }],
+    theme: { preset: "custom", accent: "#ff0000", bg: "nao-e-cor", dark: 1 } }) });
+  const tp = x3.b;
+  ok(tp.theme.preset === "custom" && tp.theme.accent === "#ff0000" && tp.theme.bg === "#0a72bb" && tp.theme.dark === true, "tema custom saneado (cor inválida vira padrão)");
+  x3 = await J(`/api/p/${tp.id}`); ok(x3.b.theme.preset === "custom", "votante recebe o tema");
+  x3 = await J("/api/polls", { method: "POST", headers: { ...AH, "content-type": "application/json" }, body: JSON.stringify({ title: "x", theme: { preset: "<script>" } }) });
+  ok(x3.b.theme.preset === "azul", "preset inválido vira azul");
+  await J(`/api/polls/${x3.b.id}`, { method: "DELETE", headers: AH });
+  const j = (await J(`/api/p/${tp.id}/join`, { method: "POST", body: JSON.stringify({ name: "Lia" }) })).b;
+  const v1 = sock(`${WS}/ws/p/${tp.id}?token=${j.token}`); await v1.opened; await sleep(200);
+  ok(v1.msgs[0]?.t === "hello" && Array.isArray(v1.msgs[0].sent) && v1.msgs[0].sent.length === 0, "hello traz seções enviadas (vazio)");
+  v1.ws.send(JSON.stringify({ t: "vote", sec: 0, q: 0, value: 4 })); await sleep(150);
+  v1.ws.send(JSON.stringify({ t: "submit", sec: 0 })); await sleep(150);
+  ok(v1.msgs.some((m) => m.t === "incomplete" && m.sec === 0), "enviar incompleto é recusado");
+  v1.ws.send(JSON.stringify({ t: "vote", sec: 0, q: 1, value: 5 })); await sleep(150);
+  v1.ws.send(JSON.stringify({ t: "submit", sec: 0 })); await sleep(200);
+  ok(v1.msgs.some((m) => m.t === "sent" && m.sec === 0), "enviar seção completa = ok");
+  v1.ws.send(JSON.stringify({ t: "vote", sec: 0, q: 0, value: 1 })); await sleep(200);
+  ok(v1.msgs.some((m) => m.t === "locked" && m.sec === 0), "alterar seção enviada = locked");
+  x3 = await J(`/api/polls/${tp.id}/participants/${j.token}/answers`, { headers: AH });
+  ok(x3.r.status === 200 && x3.b.votes["0_0"] === 4 && x3.b.votes["0_1"] === 5 && x3.b.sent.join() === "0", "respostas da pessoa: notas originais preservadas + seção enviada");
+  v1.ws.send(JSON.stringify({ t: "vote", sec: 1, q: 0, value: 3 })); await sleep(150);
+  x3 = await J(`/api/polls/${tp.id}/participants/${j.token}/answers`, { headers: AH });
+  ok(x3.b.votes["1_0"] === 3, "outra seção (não enviada) ainda aceita voto");
+  v1.ws.close(); await sleep(150);
+  const v2 = sock(`${WS}/ws/p/${tp.id}?token=${j.token}`); await v2.opened; await sleep(200);
+  ok(v2.msgs[0].sent.join() === "0", "ao reconectar, hello traz seção 0 enviada");
+  v2.ws.close();
+  x3 = await J(`/api/polls/${tp.id}/participants/${j.token}/answers`); ok(x3.r.status === 401, "respostas sem login = 401");
+  const pubSec = (await J(`/api/p/${tp.id}`)).b.sections;
+  ok(!JSON.stringify(pubSec).includes("Zé"), "votante não vê o nome do competidor");
+  await J(`/api/polls/${tp.id}`, { method: "DELETE", headers: AH });
+}
+
 // páginas
 for (const [p, s] of [["/", 200], ["/admin", 200], [`/v/${poll.id}`, 200]]) { const r = await fetch(BASE + p); ok(r.status === s, `GET ${p} = ${r.status}`); }
 
