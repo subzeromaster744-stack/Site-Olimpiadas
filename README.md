@@ -34,6 +34,14 @@ npx wrangler secret put ADMIN_PASSWORD
 Os QR Codes usam o endereço em que o painel foi aberto; gere/baixe os QR **depois** de acessar o painel pelo domínio final.
 Domínio próprio: *Settings → Domains & Routes* no Worker.
 
+## Contas de organizador
+
+Qualquer pessoa que abrir o link principal pode **criar uma conta** (usuário + senha) e montar os próprios formulários; cada organizador só vê e controla os formulários que criou. Quem vota (QR Code) não precisa de conta.
+
+- O usuário `admin` + a senha `ADMIN_PASSWORD` entra como **administrador**: vê e gerencia os formulários de todos (inclusive os criados antes das contas).
+- Opcional: crie um Secret `SIGNUP_CODE` para exigir um código de convite no cadastro (sem ele, o cadastro é aberto).
+- Senhas são guardadas com PBKDF2-SHA256 (100 mil iterações). Trocar `ADMIN_PASSWORD` desconecta todos (precisam entrar de novo).
+
 ## Estrutura
 ```
 src/worker.js   entrada: login admin (HMAC), roteia API/WebSocket para o Durable Object, serve /public

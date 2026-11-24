@@ -4,8 +4,9 @@ const TURNOS = ["1° Turno", "2° Turno", "3° Turno"];
 const CATS = ["Segurança", "Quick Kaizen", "Standard Kaizen"];
 const DEF_Q = ["Solução do problema", "Impacto nos indicadores", "Criatividade / inovação", "Facilidade de replicação", "Custo-benefício", "Clareza do relatório"];
 const TOKEN_KEY = "olp_admin";
+const USER_KEY = "olp_user";
 
-const A = { token: localStorage.getItem(TOKEN_KEY), polls: new Map(), sel: null, view: "poll", tab: "live", conn: "off", sock: null, loaded: false, flash: null, dupFrom: null };
+const A = { token: localStorage.getItem(TOKEN_KEY), user: (() => { try { return JSON.parse(localStorage.getItem(USER_KEY)); } catch { return null; } })(), polls: new Map(), sel: null, view: "poll", tab: "live", conn: "off", sock: null, loaded: false, flash: null, dupFrom: null };
 const root = $("#root");
 const fmt = (x) => (x ? x.toFixed(2).replace(".", ",") : "–");
 const hhmm = (t) => new Date(t).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
@@ -20,27 +21,54 @@ async function api(path, opts = {}) {
   return b;
 }
 
-/* ---------- login ---------- */
-function logout() { localStorage.removeItem(TOKEN_KEY); A.token = null; A.sock?.close(); A.sock = null; A.loaded = false; A.polls.clear(); showLogin(); }
-function showLogin(msg) {
-  const pw = h("input", { type: "password", placeholder: "Senha do organizador", autofocus: true, autocomplete: "current-password" });
+/* ---------- login / criar conta ---------- */
+function logout() {
+  localStorage.removeItem(TOKEN_KEY); localStorage.removeItem(USER_KEY);
+  A.token = null; A.user = null; A.sock?.close(); A.sock = null; A.loaded = false; A.polls.clear(); showLogin();
+}
+function showLogin(msg, mode = "in") {
+  const reg = mode === "up";
+  const name = h("input", { type: "text", placeholder: "Seu nome (como aparece no painel)", autocomplete: "name", maxlength: 60 });
+  const user = h("input", { type: "text", placeholder: "Usuário", autocomplete: "username", autocapitalize: "none", spellcheck: false, autofocus: true });
+  const pw = h("input", { type: "password", placeholder: reg ? "Senha (mínimo 6 caracteres)" : "Senha", autocomplete: reg ? "new-password" : "current-password" });
+  const pw2 = h("input", { type: "password", placeholder: "Repita a senha", autocomplete: "new-password" });
+  const code = h("input", { type: "text", placeholder: "Código de convite", autocomplete: "off", style: "display:none" });
+  fetch("/api/auth/config").then((r) => r.json()).then((c) => { if (c.needsCode) code.style.display = ""; }).catch(() => {});
   const err = h("div", { class: "err-text" }, msg || "");
+  const done = (b, fallbackName) => {
+    A.token = b.token; A.user = { name: b.name || fallbackName };
+    localStorage.setItem(TOKEN_KEY, b.token); localStorage.setItem(USER_KEY, JSON.stringify(A.user)); boot();
+  };
+  const post = async (url, body) => {
+    const r = await fetch(url, { method: "POST", body: JSON.stringify(body) });
+    const b = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(b.error || "Erro " + r.status);
+    return b;
+  };
   const go = async () => {
     err.textContent = ""; btn.disabled = true;
     try {
-      const r = await fetch("/api/admin/login", { method: "POST", body: JSON.stringify({ password: pw.value }) });
-      const b = await r.json();
-      if (!r.ok) throw new Error(b.error);
-      A.token = b.token; localStorage.setItem(TOKEN_KEY, b.token); boot();
+      const u = user.value.trim();
+      if (reg) {
+        if (pw.value !== pw2.value) throw new Error("As senhas não são iguais.");
+        done(await post("/api/auth/register", { username: u, name: name.value, password: pw.value, code: code.value }));
+      } else if (u.toLowerCase() === "admin") {
+        done(await post("/api/admin/login", { password: pw.value }), "Administrador");
+      } else {
+        done(await post("/api/auth/login", { username: u, password: pw.value }));
+      }
     } catch (e) { err.textContent = e.message || "Falha no login"; btn.disabled = false; }
   };
-  const btn = h("button", { class: "btn", type: "button", style: "width:100%", onclick: go }, "Entrar");
-  pw.addEventListener("keydown", (e) => e.key === "Enter" && go());
+  const btn = h("button", { class: "btn", type: "button", style: "width:100%", onclick: go }, reg ? "Criar conta e entrar" : "Entrar");
+  for (const i of [name, user, pw, pw2, code]) i.addEventListener("keydown", (e) => e.key === "Enter" && go());
+  const tab = (m, label) => h("button", { type: "button", class: mode === m ? "on" : "", onclick: () => showLogin("", m) }, label);
   root.replaceChildren(h("div", { class: "card login" },
     h("div", { class: "logo" }, "🏅"), h("h1", {}, "Painel de votações"),
-    h("p", { class: "small", style: "margin:0 0 18px" }, "Entre para criar formulários, gerar QR Codes e acompanhar as respostas ao vivo."),
-    pw, err, h("div", { style: "margin-top:12px" }, btn),
-    h("p", { class: "small", style: "margin:16px 0 0;text-align:center" }, "Quem vai apenas votar não precisa daqui: basta escanear o QR Code.")));
+    h("p", { class: "small", style: "margin:0 0 14px" }, "Crie sua conta de organizador para montar formulários, gerar QR Codes e acompanhar as respostas ao vivo."),
+    h("div", { class: "seg" }, tab("in", "Entrar"), tab("up", "Criar conta")),
+    h("div", { class: "stack" }, ...(reg ? [name, user, pw, pw2, code] : [user, pw])),
+    err, h("div", { style: "margin-top:12px" }, btn),
+    h("p", { class: "small", style: "margin:16px 0 0;text-align:center" }, "Quem vai apenas votar não precisa de conta: basta escanear o QR Code.")));
 }
 
 /* ---------- tempo real ---------- */
@@ -84,6 +112,7 @@ function renderBar() {
   bar.replaceChildren(h("h1", {}, h("span", {}, "🏅 "), "Painel de votações"),
     h("div", { style: "display:flex;gap:14px;align-items:center" },
       h("span", { class: "conn " + A.conn }, h("i"), A.conn === "on" ? `ao vivo · ${online} online` : "reconectando…"),
+      A.user ? h("span", { class: "who" }, "👤 " + A.user.name) : null,
       h("button", { class: "btn ghost sm", type: "button", onclick: logout }, "Sair")));
 }
 function renderSide() {

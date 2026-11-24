@@ -176,6 +176,79 @@ ok(x.r.status === 403 && x.b.error === "closed", "novas entradas bloqueadas quan
 const csv = await fetch(`${BASE}/api/polls/${poll.id}/export.csv`, { headers: { authorization: "Bearer " + T } });
 ok(csv.status === 200 && (await csv.text()).includes("Maria Silva"), "exportar CSV");
 
+
+// ---------- contas de organizador ----------
+{
+  const post = (path, body, h = {}) => J(path, { method: "POST", body: JSON.stringify(body), headers: h });
+  const suf = Math.random().toString(36).slice(2, 7);
+  const ua = `ana_${suf}`, ub = `bia_${suf}`;
+  let r1 = await post("/api/auth/register", { username: ua, name: "Ana", password: "123" });
+  ok(r1.r.status === 400, "senha curta recusada");
+  r1 = await post("/api/auth/register", { username: "admin", password: "123456" });
+  ok(r1.r.status === 400, "usuário 'admin' reservado");
+  r1 = await post("/api/auth/register", { username: "a b", password: "123456" });
+  ok(r1.r.status === 400, "usuário inválido recusado");
+  const A1 = await post("/api/auth/register", { username: ua, name: "Ana", password: "segredo1" });
+  ok(A1.r.status === 201 && A1.b.token?.startsWith("u.") && A1.b.name === "Ana", "criar conta Ana");
+  ok(!JSON.stringify(A1.b).includes("segredo1") && !A1.b.hash, "resposta sem senha/hash");
+  r1 = await post("/api/auth/register", { username: ua.toUpperCase(), password: "outra123" });
+  ok(r1.r.status === 409, "usuário duplicado (maiúsc.) = 409");
+  r1 = await post("/api/auth/login", { username: ua, password: "errada1" });
+  ok(r1.r.status === 401, "login com senha errada = 401");
+  r1 = await post("/api/auth/login", { username: "naoexiste", password: "segredo1" });
+  ok(r1.r.status === 401, "login de usuário inexistente = 401");
+  const L1 = await post("/api/auth/login", { username: ua.toUpperCase(), password: "segredo1" });
+  ok(L1.r.status === 200 && L1.b.id === A1.b.id, "login Ana ok");
+  const B1 = await post("/api/auth/register", { username: ub, name: "Bia", password: "segredo2" });
+  const TA = { authorization: "Bearer " + A1.b.token }, TB = { authorization: "Bearer " + B1.b.token };
+
+  let x2 = await J("/api/polls", { headers: { authorization: "Bearer u." + A1.b.id + ".00" } });
+  ok(x2.r.status === 401, "token de usuário forjado = 401");
+  x2 = await J("/api/polls"); ok(x2.r.status === 401, "sem token = 401");
+
+  x2 = await J("/api/polls", { method: "POST", headers: TA, body: JSON.stringify({ title: "Form da Ana" }) });
+  ok(x2.r.status === 201, "Ana cria formulário");
+  const pa = x2.b;
+  const wa = sock(`${WS}/ws/admin?token=${A1.b.token}`), wb = sock(`${WS}/ws/admin?token=${B1.b.token}`);
+  await wa.opened; await wb.opened; await sleep(250);
+  ok(wa.msgs[0]?.t === "init" && wa.msgs[0].polls.some((p) => p.id === pa.id), "Ana vê o formulário dela ao vivo");
+  ok(wb.msgs[0]?.t === "init" && !wb.msgs[0].polls.some((p) => p.id === pa.id), "Bia não vê o da Ana");
+  x2 = await J("/api/polls", { headers: TB }); ok(x2.b.length === 0, "lista da Bia vazia");
+  x2 = await J("/api/polls", { headers: TA }); ok(x2.b.length === 1 && x2.b[0].id === pa.id, "lista da Ana tem 1");
+  x2 = await J("/api/polls", { headers: AH }); ok(x2.b.some((p) => p.id === pa.id), "administrador vê tudo");
+
+  for (const [m, path, body, ct] of [
+    ["PUT", `/api/polls/${pa.id}`, JSON.stringify({ title: "hack" })],
+    ["DELETE", `/api/polls/${pa.id}`], ["GET", `/api/polls/${pa.id}/export.csv`],
+    ["DELETE", `/api/polls/${pa.id}/kicked`],
+    ["PUT", `/api/polls/${pa.id}/image/0`, new Uint8Array([1, 2, 3]), "image/png"],
+  ]) {
+    x2 = await J(path, { method: m, headers: { ...TB, ...(ct ? { "content-type": ct } : {}) }, body });
+    ok(x2.r.status === 404, `Bia não consegue ${m} ${path.replace(pa.id, "<ana>")} (404)`);
+  }
+  x2 = await J(`/api/p/${pa.id}`); ok(x2.b.title === "Form da Ana", "formulário continua intacto e público para votar");
+
+  // votante entra no form da Ana; só Ana é avisada
+  x2 = await J(`/api/p/${pa.id}/join`, { method: "POST", body: JSON.stringify({ name: "Carlos" }) });
+  await sleep(250);
+  ok(wa.msgs.some((m) => m.t === "live" && m.poll === pa.id && m.participants.length === 1), "Ana recebe entrada do votante");
+  ok(!wb.msgs.some((m) => m.poll === pa.id || m.poll?.id === pa.id), "Bia não recebe nada do form da Ana");
+  const pid = x2.b.token;
+  x2 = await J(`/api/polls/${pa.id}/participants/${pid}/kick`, { method: "POST", headers: TB });
+  ok(x2.r.status === 404, "Bia não expulsa votante da Ana");
+  x2 = await J(`/api/polls/${pa.id}/participants/${pid}/annul`, { method: "POST", headers: TA });
+  ok(x2.r.status === 200, "Ana anula votante");
+
+  x2 = await J("/api/polls", { method: "POST", headers: TB, body: JSON.stringify({ title: "Form da Bia" }) });
+  const pb = x2.b; await sleep(250);
+  ok(wb.msgs.some((m) => m.t === "poll" && m.poll.id === pb.id) && !wa.msgs.some((m) => m.t === "poll" && m.poll.id === pb.id), "form novo da Bia só chega para a Bia");
+  x2 = await J("/api/polls", { headers: AH }); ok(x2.b.length >= 2, "administrador vê os dois");
+  await J(`/api/polls/${pb.id}`, { method: "DELETE", headers: TB });
+  await J(`/api/polls/${pa.id}`, { method: "DELETE", headers: TA }); await sleep(250);
+  ok(wa.msgs.some((m) => m.t === "deleted" && m.poll === pa.id) && !wb.msgs.some((m) => m.t === "deleted" && m.poll === pa.id), "exclusão avisa só o dono");
+  wa.ws.close(); wb.ws.close();
+}
+
 // páginas
 for (const [p, s] of [["/", 200], ["/admin", 200], [`/v/${poll.id}`, 200]]) { const r = await fetch(BASE + p); ok(r.status === s, `GET ${p} = ${r.status}`); }
 

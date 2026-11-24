@@ -167,3 +167,9 @@ tr.annulled td{background:#fff6f5;color:#8a6a68}
 tr.annulled .pbar i{background:#d9a29d}
 td.acts{white-space:nowrap}td.acts .btn{margin-left:6px}
 @media (max-width:700px){td.acts{white-space:normal}}
+
+.login .stack{display:flex;flex-direction:column;gap:10px}
+.seg{display:flex;gap:4px;background:#e8eef4;border-radius:10px;padding:4px;margin-bottom:14px}
+.seg button{flex:1;border:0;background:transparent;padding:8px;border-radius:7px;font:inherit;font-weight:600;color:#4a6378;cursor:pointer}
+.seg button.on{background:#fff;color:var(--title);box-shadow:0 1px 4px rgba(8,50,80,.18)}
+.who{color:#fff;font-weight:600;font-size:14px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}

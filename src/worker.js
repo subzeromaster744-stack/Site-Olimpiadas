@@ -23,12 +23,27 @@ function safeEq(a, b) {
   return crypto.subtle.timingSafeEqual(x, y);
 }
 
-async function isAdmin(request, url, env) {
-  if (!env.ADMIN_PASSWORD) return false;
+// Token de usuário comum: "u.<id>.<hmac>" (assinado com a senha do administrador como chave)
+async function userSig(env, id) {
+  const key = await crypto.subtle.importKey(
+    "raw", enc.encode(env.ADMIN_PASSWORD), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const sig = await crypto.subtle.sign("HMAC", key, enc.encode("olp-user-v1:" + id));
+  return [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+const userToken = async (env, id) => `u.${id}.${await userSig(env, id)}`;
+
+// Quem está chamando: { admin: true } | { uid: "<id>" } | {}
+async function whoAmI(request, url, env) {
+  if (!env.ADMIN_PASSWORD) return {};
   const auth = request.headers.get("authorization") || "";
   const t = auth.startsWith("Bearer ") ? auth.slice(7) : url.searchParams.get("token") || "";
-  if (!t) return false;
-  return safeEq(t, await adminToken(env));
+  if (!t) return {};
+  if (t.startsWith("u.")) {
+    const [, id, sig] = t.split(".");
+    if (id && sig && /^[0-9a-f-]{36}$/.test(id) && safeEq(sig, await userSig(env, id))) return { uid: id };
+    return {};
+  }
+  return safeEq(t, await adminToken(env)) ? { admin: true } : {};
 }
 
 export default {
@@ -47,13 +62,34 @@ export default {
       return json({ token: await adminToken(env) });
     }
 
+    if (p === "/api/auth/config") return json({ needsCode: !!env.SIGNUP_CODE });
+
+    // Conta de organizador: criar / entrar (a senha é guardada com PBKDF2 no Durable Object)
+    if ((p === "/api/auth/register" || p === "/api/auth/login") && request.method === "POST") {
+      if (!env.ADMIN_PASSWORD) return json({ error: "ADMIN_PASSWORD não configurada no Worker." }, 500);
+      let body = {};
+      try { body = await request.clone().json(); } catch {}
+      if (p === "/api/auth/register" && env.SIGNUP_CODE && !safeEq(String(body.code ?? ""), String(env.SIGNUP_CODE)))
+        return json({ error: "Código de convite incorreto." }, 403);
+      const headers = new Headers(request.headers);
+      headers.delete("x-admin-ok"); headers.delete("x-owner");
+      const r = await env.HUB.get(env.HUB.idFromName("hub")).fetch(new Request(request, { headers }));
+      if (!r.ok) {
+        if (p === "/api/auth/login") await new Promise((res) => setTimeout(res, 400));
+        return r;
+      }
+      const u = await r.json();
+      return json({ ...u, token: await userToken(env, u.id) }, r.status);
+    }
+
     const toHub = p.startsWith("/api/") || p.startsWith("/ws/") || p.startsWith("/img/") || p.startsWith("/pdf/");
     if (toHub) {
-      const admin = await isAdmin(request, url, env);
-      if ((p.startsWith("/api/polls") || p === "/ws/admin") && !admin) return json({ error: "unauthorized" }, 401);
+      const me = await whoAmI(request, url, env);
+      if ((p.startsWith("/api/polls") || p === "/ws/admin") && !me.admin && !me.uid) return json({ error: "unauthorized" }, 401);
       const headers = new Headers(request.headers);
-      headers.delete("x-admin-ok");
-      if (admin) headers.set("x-admin-ok", "1");
+      headers.delete("x-admin-ok"); headers.delete("x-owner");
+      if (me.admin) headers.set("x-admin-ok", "1");
+      else if (me.uid) headers.set("x-owner", me.uid);
       const stub = env.HUB.get(env.HUB.idFromName("hub"));
       return stub.fetch(new Request(request, { headers }));
     }

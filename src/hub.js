@@ -24,6 +24,7 @@ const DEFAULT_QUESTIONS = [
 const MAX_IMAGE = 1_900_000; // bytes (limite de linha do SQLite do DO é 2 MB)
 const MAX_PARTICIPANTS = 3000;
 const MAX_PDF = 20 * 1024 * 1024; // PDF completo da seção (guardado em pedaços)
+const MAX_USERS = 1000;
 const CHUNK = 1_500_000;           // cada linha do SQLite do DO aceita até 2 MB
 
 export class Hub extends DurableObject {
@@ -49,6 +50,12 @@ export class Hub extends DurableObject {
     // migração: bancos criados antes da função "anular respostas" não têm a coluna
     if (!this.q("PRAGMA table_info(participants)").some((c) => c.name === "annulled"))
       x(`ALTER TABLE participants ADD COLUMN annulled INTEGER NOT NULL DEFAULT 0`);
+    // migração: formulários passam a ter dono (NULL = criados antes das contas; só o administrador vê)
+    if (!this.q("PRAGMA table_info(polls)").some((c) => c.name === "owner"))
+      x(`ALTER TABLE polls ADD COLUMN owner TEXT`);
+    x(`CREATE TABLE IF NOT EXISTS users (
+         id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
+         salt TEXT NOT NULL, hash TEXT NOT NULL, created_at INTEGER NOT NULL)`);
     x(`CREATE TABLE IF NOT EXISTS docs (
          poll_id TEXT NOT NULL, sec INTEGER NOT NULL, name TEXT NOT NULL, size INTEGER NOT NULL, ver INTEGER NOT NULL,
          PRIMARY KEY (poll_id, sec))`);
@@ -60,6 +67,38 @@ export class Hub extends DurableObject {
   dropDoc(pollId, minSec = 0) {
     this.sql.exec("DELETE FROM doc_chunks WHERE poll_id=? AND sec>=?", pollId, minSec);
     this.sql.exec("DELETE FROM docs WHERE poll_id=? AND sec>=?", pollId, minSec);
+  }
+
+  /* ------------------------------ contas ------------------------------ */
+  async hashPw(password, saltHex) {
+    const salt = Uint8Array.from(saltHex.match(/../g).map((h) => parseInt(h, 16)));
+    const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveBits"]);
+    const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt, iterations: 100000 }, key, 256);
+    return [...new Uint8Array(bits)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  }
+
+  async auth(path, request) {
+    let b; try { b = await request.json(); } catch { return json({ error: "bad_json" }, 400); }
+    const username = String(b.username ?? "").trim().toLowerCase();
+    const password = String(b.password ?? "");
+    if (path === "/api/auth/register") {
+      if (!/^[a-z0-9._-]{3,30}$/.test(username)) return json({ error: "Usuário: 3 a 30 caracteres (letras, números, ponto, hífen ou _)." }, 400);
+      if (username === "admin") return json({ error: "Esse usuário é reservado. Escolha outro." }, 400);
+      if (password.length < 6 || password.length > 200) return json({ error: "A senha precisa ter pelo menos 6 caracteres." }, 400);
+      if (this.q("SELECT 1 AS x FROM users WHERE username=?", username).length) return json({ error: "Esse usuário já existe. Escolha outro." }, 409);
+      if (this.q("SELECT COUNT(*) AS n FROM users")[0].n >= MAX_USERS) return json({ error: "Limite de contas atingido." }, 429);
+      const name = clean(b.name, 60) || username;
+      const id = crypto.randomUUID();
+      const salt = [...crypto.getRandomValues(new Uint8Array(16))].map((x) => x.toString(16).padStart(2, "0")).join("");
+      this.sql.exec("INSERT INTO users (id, username, name, salt, hash, created_at) VALUES (?,?,?,?,?,?)",
+        id, username, name, salt, await this.hashPw(password, salt), Date.now());
+      return json({ id, username, name }, 201);
+    }
+    const u = this.q("SELECT * FROM users WHERE username=?", username)[0];
+    // sempre faz o cálculo, para o tempo de resposta não revelar se o usuário existe
+    const calc = await this.hashPw(password, u ? u.salt : "00".repeat(16));
+    if (!u || calc !== u.hash) return json({ error: "Usuário ou senha incorretos." }, 401);
+    return json({ id: u.id, username: u.username, name: u.name });
   }
 
   /* ------------------------------ helpers ------------------------------ */
@@ -121,9 +160,12 @@ export class Hub extends DurableObject {
     return { ...this.publicPoll(r), participants: this.participants(r, exclude), results: this.results(r.id) };
   }
 
-  toAdmins(msg) {
+  // owner: dono do formulário. O administrador (tag "all") recebe tudo; cada organizador só o que é dele.
+  toAdmins(msg, owner) {
     const s = JSON.stringify(msg);
-    for (const ws of this.ctx.getWebSockets("admin")) { try { ws.send(s); } catch {} }
+    const targets = new Set(this.ctx.getWebSockets("all"));
+    if (owner && owner !== "admin") for (const ws of this.ctx.getWebSockets("own:" + owner)) targets.add(ws);
+    for (const ws of targets) { try { ws.send(s); } catch {} }
   }
   toVoters(pollId, msg, only) {
     const s = JSON.stringify(msg);
@@ -135,12 +177,12 @@ export class Hub extends DurableObject {
   pushLive(pollId, exclude) {
     const r = this.pollRow(pollId);
     if (!r) return;
-    this.toAdmins({ t: "live", poll: pollId, participants: this.participants(r, exclude), results: this.results(pollId) });
+    this.toAdmins({ t: "live", poll: pollId, participants: this.participants(r, exclude), results: this.results(pollId) }, r.owner);
   }
   pushPoll(pollId) {
     const r = this.pollRow(pollId);
     if (!r) return;
-    this.toAdmins({ t: "poll", poll: this.adminPoll(r) });
+    this.toAdmins({ t: "poll", poll: this.adminPoll(r) }, r.owner);
     this.toVoters(pollId, { t: "poll", poll: this.publicPoll(r) });
   }
 
@@ -164,11 +206,14 @@ export class Hub extends DurableObject {
     const path = url.pathname;
     const method = request.method;
     const admin = request.headers.get("x-admin-ok") === "1";
+    const uid = request.headers.get("x-owner") || "";
     let m;
 
+    if ((path === "/api/auth/register" || path === "/api/auth/login") && method === "POST") return this.auth(path, request);
+
     if (path === "/ws/admin") {
-      if (!admin) return json({ error: "unauthorized" }, 401);
-      return this.acceptAdmin(request);
+      if (!admin && !uid) return json({ error: "unauthorized" }, 401);
+      return this.acceptAdmin(request, admin, uid);
     }
     if ((m = path.match(/^\/ws\/p\/([a-z0-9]+)$/))) return this.acceptVoter(request, m[1], url.searchParams.get("token"));
 
@@ -210,21 +255,29 @@ export class Hub extends DurableObject {
     }
     if ((m = path.match(/^\/api\/p\/([a-z0-9]+)\/join$/)) && method === "POST") return this.join(m[1], request);
 
-    if (!admin) return json({ error: "unauthorized" }, 401);
+    if (!admin && !uid) return json({ error: "unauthorized" }, 401);
+    const mine = (r) => admin || r.owner === uid;
+
+    // qualquer rota de um formulário de outra pessoa responde como se ele não existisse
+    if ((m = path.match(/^\/api\/polls\/([a-z0-9]+)(\/|$)/))) {
+      const r = this.pollRow(m[1]);
+      if (r && !mine(r)) return json({ error: "not_found" }, 404);
+    }
 
     if (path === "/api/polls" && method === "GET")
-      return json(this.q("SELECT * FROM polls ORDER BY created_at DESC").map((r) => this.adminPoll(r)));
+      return json(this.listPolls(admin, uid).map((r) => this.adminPoll(r)));
 
     if (path === "/api/polls" && method === "POST") {
       let b; try { b = await request.json(); } catch { return json({ error: "bad_json" }, 400); }
       const d = this.parsePoll(b);
       const id = rid(8);
       this.sql.exec(
-        `INSERT INTO polls (id, rodada, categoria, turno, title, status, sections, questions, created_at)
-         VALUES (?,?,?,?,?,'open',?,?,?)`,
-        id, d.rodada, d.categoria, d.turno, d.title, JSON.stringify(d.sections), JSON.stringify(d.questions), Date.now());
-      const poll = this.adminPoll(this.pollRow(id));
-      this.toAdmins({ t: "poll", poll });
+        `INSERT INTO polls (id, rodada, categoria, turno, title, status, sections, questions, created_at, owner)
+         VALUES (?,?,?,?,?,'open',?,?,?,?)`,
+        id, d.rodada, d.categoria, d.turno, d.title, JSON.stringify(d.sections), JSON.stringify(d.questions), Date.now(), admin ? "admin" : uid);
+      const row = this.pollRow(id);
+      const poll = this.adminPoll(row);
+      this.toAdmins({ t: "poll", poll }, row.owner);
       return json(poll, 201);
     }
 
@@ -253,7 +306,7 @@ export class Hub extends DurableObject {
         for (const t of ["votes", "participants", "images"]) this.sql.exec(`DELETE FROM ${t} WHERE poll_id=?`, id);
         this.dropDoc(id);
         this.sql.exec("DELETE FROM polls WHERE id=?", id);
-        this.toAdmins({ t: "deleted", poll: id });
+        this.toAdmins({ t: "deleted", poll: id }, r.owner);
         return json({ ok: true });
       }
     }
@@ -355,6 +408,12 @@ export class Hub extends DurableObject {
     return json({ error: "not_found" }, 404);
   }
 
+  listPolls(admin, uid) {
+    return admin
+      ? this.q("SELECT * FROM polls ORDER BY created_at DESC")
+      : this.q("SELECT * FROM polls WHERE owner=? ORDER BY created_at DESC", uid);
+  }
+
   async join(pollId, request) {
     const r = this.pollRow(pollId);
     if (!r) return json({ error: "not_found" }, 404);
@@ -401,12 +460,12 @@ export class Hub extends DurableObject {
   }
 
   /* ------------------------------ WebSocket ------------------------------ */
-  acceptAdmin(request) {
+  acceptAdmin(request, admin, uid) {
     if (request.headers.get("upgrade") !== "websocket") return new Response("Expected websocket", { status: 426 });
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
-    this.ctx.acceptWebSocket(server, ["admin"]);
-    server.send(JSON.stringify({ t: "init", polls: this.q("SELECT * FROM polls ORDER BY created_at DESC").map((r) => this.adminPoll(r)) }));
+    this.ctx.acceptWebSocket(server, admin ? ["all"] : ["own:" + uid]);
+    server.send(JSON.stringify({ t: "init", polls: this.listPolls(admin, uid).map((r) => this.adminPoll(r)) }));
     return new Response(null, { status: 101, webSocket: client });
   }
 
@@ -433,7 +492,7 @@ export class Hub extends DurableObject {
   webSocketMessage(ws, raw) {
     let msg; try { msg = JSON.parse(raw); } catch { return; }
     if (msg?.t === "ping") { try { ws.send('{"t":"pong"}'); } catch {} return; }
-    if (this.ctx.getTags(ws).includes("admin")) return;
+    if (!this.ctx.getTags(ws).some((t) => t.startsWith("p:"))) return; // painel só escuta
     const a = ws.deserializeAttachment();
     if (!a?.pid || msg?.t !== "vote") return;
 
