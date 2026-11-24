@@ -438,7 +438,7 @@ function formView(p, opts = {}) {
   };
   drawCustom();
   const themeField = h("div", { class: "field" }, h("label", { class: "lbl" }, "Estilo do formulário"),
-    h("div", { class: "hint", style: "margin:0 0 8px" }, "Muda as cores da página que o participante vê. “Preto e dourado” é o visual do ano passado."),
+    h("div", { class: "hint", style: "margin:0 0 8px" }, "Muda as cores da página que o participante vê."),
     themeChips, custom, tpv);
   const bigIn = h("input", { type: "text", maxlength: "12", value: v.bannerBig, placeholder: "Ex.: 10" });
   const subIn = h("input", { type: "text", maxlength: "40", value: v.bannerSub, placeholder: "Ex.: Anos · Olimpíadas" });

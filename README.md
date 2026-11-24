@@ -46,7 +46,7 @@ Qualquer pessoa que abrir o link principal pode **criar uma conta** (usuário + 
 
 - **Enviar trava a seção:** o participante responde a seção e toca em "Enviar e continuar"; depois disso não dá para voltar nem alterar (o servidor também recusa). Se recarregar a página, volta na primeira seção não enviada.
 - **Respostas por pessoa:** no painel, clique no nome (ou em "Ver respostas") para ver as notas da pessoa e a soma por seção, ao vivo.
-- **Estilos:** em Configurar → "Estilo do formulário": Azul (padrão), Preto e dourado (visual do ano passado) ou Personalizado (cor de destaque, fundo, cartões claros/escuros). O banner pode ser trocado por uma imagem (ex.: a arte do ano passado).
+- **Estilos:** em Configurar → "Estilo do formulário": Azul, Preto e dourado ou Personalizado (cor de destaque, fundo, cartões claros/escuros). O banner pode ser trocado por uma imagem (sua própria arte).
 
 ## Estrutura
 ```

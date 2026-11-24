@@ -42,8 +42,8 @@ function bannerEl(b) {
 
 /* ---------- estilos (temas) do formulário ---------- */
 const THEMES = {
-  azul: { label: "Azul (padrão)" },
-  ouro: { label: "Preto e dourado (ano passado)" },
+  azul: { label: "Azul" },
+  ouro: { label: "Preto e dourado" },
   custom: { label: "Personalizado" },
 };
 const _rgb = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
