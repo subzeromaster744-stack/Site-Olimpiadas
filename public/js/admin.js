@@ -6,7 +6,7 @@ const DEF_Q = ["Solução do problema", "Impacto nos indicadores", "Simplicidade
 const TOKEN_KEY = "olp_admin";
 const USER_KEY = "olp_user";
 
-const A = { token: localStorage.getItem(TOKEN_KEY), user: (() => { try { return JSON.parse(localStorage.getItem(USER_KEY)); } catch { return null; } })(), polls: new Map(), folders: [], place: {}, sel: null, view: "poll", tab: "live", conn: "off", sock: null, loaded: false, flash: null, dupFrom: null };
+const A = { token: localStorage.getItem(TOKEN_KEY), user: (() => { try { return JSON.parse(localStorage.getItem(USER_KEY)); } catch { return null; } })(), polls: new Map(), folders: [], place: {}, order: {}, sel: null, view: "poll", tab: "live", conn: "off", sock: null, loaded: false, flash: null, dupFrom: null };
 const root = $("#root");
 const fmt = (x) => (x ? x.toFixed(2).replace(".", ",") : "–");
 const hhmm = (t) => new Date(t).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
@@ -79,10 +79,10 @@ function connect() {
     onstatus: (s) => { A.conn = s; renderBar(); },
     onmessage: (m) => {
       if (m.t === "init") {
-        A.polls = new Map(m.polls.map((p) => [p.id, p])); A.loaded = true; A.folders = m.folders || []; A.place = m.placement || {};
+        A.polls = new Map(m.polls.map((p) => [p.id, p])); A.loaded = true; A.folders = m.folders || []; A.place = m.placement || {}; A.order = m.order || {};
         if (!A.sel || !A.polls.has(A.sel)) A.sel = m.polls[0]?.id || null;
         if (editing(A.sel)) { renderSide(); renderBar(); } else renderAll();
-      } else if (m.t === "folders") { A.folders = m.folders; A.place = m.placement; renderSide();
+      } else if (m.t === "folders") { A.folders = m.folders; A.place = m.placement; A.order = m.order || {}; renderSide();
       } else if (m.t === "poll") {
         A.polls.set(m.poll.id, m.poll);
         if (editing(m.poll.id)) { renderSide(); renderBar(); } else renderAll();
@@ -123,9 +123,11 @@ const COLL_KEY = "olp_collapsed";
 const collapsed = (() => { try { return new Set(JSON.parse(localStorage.getItem(COLL_KEY) || "[]")); } catch { return new Set(); } })();
 const saveColl = () => { try { localStorage.setItem(COLL_KEY, JSON.stringify([...collapsed])); } catch {} };
 const byName = (a, b) => a.name.localeCompare(b.name, "pt-BR", { numeric: true, sensitivity: "base" });
-const kidsOf = (parent) => A.folders.filter((f) => (f.parent || null) === parent).sort(byName);
+const ordOf = (id) => (A.order[id] ?? 1e9);
+const byOrd = (a, b) => ordOf(a.id) - ordOf(b.id) || byName(a, b);
+const kidsOf = (parent) => A.folders.filter((f) => (f.parent || null) === parent).sort(byOrd);
 const folderOfPoll = (p) => (A.folders.some((f) => f.id === A.place[p.id]) ? A.place[p.id] : null);
-const pollsIn = (fid) => [...A.polls.values()].filter((p) => folderOfPoll(p) === fid);
+const pollsIn = (fid) => [...A.polls.values()].filter((p) => folderOfPoll(p) === fid).sort((a, b) => ordOf(a.id) - ordOf(b.id));
 const countIn = (fid) => pollsIn(fid).length + kidsOf(fid).reduce((n, f) => n + countIn(f.id), 0);
 const descendants = (id) => kidsOf(id).flatMap((f) => [f.id, ...descendants(f.id)]);
 let drag = null;
@@ -137,9 +139,29 @@ const deleteFolder = (f) => { if (confirm(`Excluir a pasta “${f.name}”?\n\nO
 const movePoll = (pid, fid) => foldersApi("/api/placement", "PUT", { poll: pid, folder: fid }).then(() => fid && (collapsed.delete(fid), saveColl(), renderSide()));
 const moveFolder = (id, parent) => foldersApi(`/api/folders/${id}`, "PUT", { parent }).then(() => parent && (collapsed.delete(parent), saveColl(), renderSide()));
 const dropOn = (target) => { // target: id da pasta ou null (raiz)
-  if (!drag) return; const d = drag; drag = null; $("#side")?.classList.remove("dragging");
+  if (!drag) return; const d = drag; drag = null; $("#side")?.classList.remove("dragging"); clearMarks();
   if (d.kind === "poll") movePoll(d.id, target); else if (d.id !== target) moveFolder(d.id, target);
 };
+/* ordem: coloca o item `d` {kind,id} dentro de `parent` (pasta ou null), antes/depois do irmão `ref` (ou no fim) */
+const clearMarks = () => document.querySelectorAll(".mk-before,.mk-after,.over").forEach((e) => e.classList.remove("mk-before", "mk-after", "over"));
+async function reorder(d, parent, ref, after) {
+  const sibs = (d.kind === "poll" ? pollsIn(parent) : kidsOf(parent)).map((x) => x.id).filter((id) => id !== d.id);
+  let i = ref ? sibs.indexOf(ref) : sibs.length; if (i < 0) i = sibs.length; if (ref && after) i++;
+  sibs.splice(i, 0, d.id);
+  const cur = d.kind === "poll" ? folderOfPoll(A.polls.get(d.id)) : (A.folders.find((f) => f.id === d.id)?.parent || null);
+  if (cur !== parent) {
+    if (d.kind === "folder" && (d.id === parent || descendants(d.id).includes(parent))) return;
+    await foldersApi(d.kind === "poll" ? "/api/placement" : `/api/folders/${d.id}`, "PUT", d.kind === "poll" ? { poll: d.id, folder: parent } : { parent });
+  }
+  if (parent) { collapsed.delete(parent); saveColl(); }
+  await foldersApi("/api/order", "PUT", { ids: sibs });
+}
+const nudge = (d, parent, dir) => { // ⬆/⬇ pelo menu
+  const sibs = (d.kind === "poll" ? pollsIn(parent) : kidsOf(parent)).map((x) => x.id), i = sibs.indexOf(d.id), j = i + dir;
+  if (i < 0 || j < 0 || j >= sibs.length) return;
+  [sibs[i], sibs[j]] = [sibs[j], sibs[i]]; foldersApi("/api/order", "PUT", { ids: sibs });
+};
+const half = (e) => { const r = e.currentTarget.getBoundingClientRect(); return e.clientY > r.top + r.height / 2; }; // true = metade de baixo
 
 function closeMenu() { $("#ctxmenu")?.remove(); }
 function openMenu(btn, items) {
@@ -168,19 +190,22 @@ function renderSide() {
   const dots = (on) => h("span", { class: "dot " + (on ? "on" : "") });
   const pollItem = (p, depth) => {
     const on = activeOf(p).filter((x) => x.online).length;
-    const kebab = h("button", { type: "button", class: "kebab", title: "Mais opções", "aria-label": "Mais opções", onclick: (e) => { e.stopPropagation(); openMenu(kebab, [["📂 Mover para…", () => pickFolder("Mover formulário para…", folderOfPoll(p), new Set(), (fid) => movePoll(p.id, fid))]]); } }, "⋮");
+    const kebab = h("button", { type: "button", class: "kebab", title: "Mais opções", "aria-label": "Mais opções", onclick: (e) => { e.stopPropagation(); openMenu(kebab, [["⬆ Subir", () => nudge({ kind: "poll", id: p.id }, folderOfPoll(p), -1)], ["⬇ Descer", () => nudge({ kind: "poll", id: p.id }, folderOfPoll(p), 1)], ["📂 Mover para…", () => pickFolder("Mover formulário para…", folderOfPoll(p), new Set(), (fid) => movePoll(p.id, fid))]]); } }, "⋮");
     return h("li", { class: "pit" + (depth ? " nest" : ""), draggable: "true", style: depth ? `margin-left:${depth * 14}px` : "",
       ondragstart: (e) => { drag = { kind: "poll", id: p.id }; e.dataTransfer.setData("text/plain", p.id); e.dataTransfer.effectAllowed = "move"; side.classList.add("dragging"); },
       ondragend: () => { drag = null; side.classList.remove("dragging"); },
-      ondragover: (e) => { if (drag) { e.preventDefault(); e.stopPropagation(); } },
-      ondrop: (e) => { e.preventDefault(); e.stopPropagation(); dropOn(folderOfPoll(p)); } },
-      h("button", { type: "button", class: p.id === A.sel && A.view === "poll" ? "on" : "", onclick: () => { A.sel = p.id; A.view = "poll"; A.tab = "live"; renderAll(); } },
+      ondragover: (e) => { if (!drag) return; e.preventDefault(); e.stopPropagation(); if (drag.kind === "poll" && drag.id !== p.id) { clearMarks(); e.currentTarget.classList.add(half(e) ? "mk-after" : "mk-before"); } },
+      ondragleave: (e) => e.currentTarget.classList.remove("mk-before", "mk-after"),
+      ondrop: (e) => { e.preventDefault(); e.stopPropagation(); const af = half(e); if (drag?.kind === "poll" && drag.id !== p.id) { const d = drag; drag = null; side.classList.remove("dragging"); clearMarks(); reorder(d, folderOfPoll(p), p.id, af); } else dropOn(folderOfPoll(p)); } },
+      h("button", { type: "button", class: p.id === A.sel && A.view === "poll" ? "on" : "", onclick: () => { A.sel = p.id; A.view = "poll"; renderAll(); } },
         h("span", { class: "t" }, p.title),
         h("span", { class: "m" }, dots(on), `${on} online · ${activeOf(p).length} participantes`, p.status === "closed" ? h("span", { class: "chip closed" }, "encerrada") : null)), kebab);
   };
+  const zone = (e) => { const r = e.currentTarget.getBoundingClientRect(), y = (e.clientY - r.top) / r.height; return y < 0.28 ? "before" : y > 0.72 ? "after" : null; };
   const folderItems = (f, depth) => {
     const open = !collapsed.has(f.id);
     const kebab = h("button", { type: "button", class: "kebab", title: "Opções da pasta", "aria-label": "Opções da pasta", onclick: (e) => { e.stopPropagation(); openMenu(kebab, [
+      ["⬆ Subir", () => nudge({ kind: "folder", id: f.id }, f.parent || null, -1)], ["⬇ Descer", () => nudge({ kind: "folder", id: f.id }, f.parent || null, 1)],
       ["✎ Renomear", () => renameFolder(f)], ["📁 Nova subpasta", () => newFolder(f.id)],
       ["📂 Mover para…", () => pickFolder("Mover pasta para…", f.parent || null, new Set([f.id, ...descendants(f.id)]), (pid) => moveFolder(f.id, pid))],
       ["🗑 Excluir pasta", () => deleteFolder(f), true]]); } }, "⋮");
@@ -188,9 +213,9 @@ function renderSide() {
       onclick: () => { open ? collapsed.add(f.id) : collapsed.delete(f.id); saveColl(); renderSide(); },
       ondragstart: (e) => { drag = { kind: "folder", id: f.id }; e.dataTransfer.setData("text/plain", f.id); e.dataTransfer.effectAllowed = "move"; side.classList.add("dragging"); },
       ondragend: () => { drag = null; side.classList.remove("dragging"); },
-      ondragover: (e) => { if (!drag || (drag.kind === "folder" && (drag.id === f.id || descendants(drag.id).includes(f.id)))) return; e.preventDefault(); e.stopPropagation(); row.classList.add("over"); },
-      ondragleave: () => row.classList.remove("over"),
-      ondrop: (e) => { e.preventDefault(); e.stopPropagation(); row.classList.remove("over"); dropOn(f.id); } },
+      ondragover: (e) => { if (!drag || (drag.kind === "folder" && (drag.id === f.id || descendants(drag.id).includes(f.id)))) return; e.preventDefault(); e.stopPropagation(); clearMarks(); const z = zone(e); if (drag.kind === "folder" && z) row.classList.add("mk-" + z); else row.classList.add("over"); },
+      ondragleave: () => row.classList.remove("over", "mk-before", "mk-after"),
+      ondrop: (e) => { e.preventDefault(); e.stopPropagation(); const z = zone(e); clearMarks(); if (drag?.kind === "folder" && z) { const d = drag; drag = null; side.classList.remove("dragging"); reorder(d, f.parent || null, f.id, z === "after"); } else dropOn(f.id); } },
       h("span", { class: "caret" }, open ? "▾" : "▸"), h("span", { class: "ficon" }, open ? "📂" : "📁"), h("span", { class: "fname" }, f.name), h("span", { class: "fcount" }, String(countIn(f.id))), kebab);
     return [row, ...(open ? [...kidsOf(f.id).flatMap((c) => folderItems(c, depth + 1)), ...pollsIn(f.id).map((p) => pollItem(p, depth + 1))] : [])];
   };
@@ -240,12 +265,22 @@ const kpi = (n, l, cls) => h("div", { class: "kpi " + (cls || "") }, h("b", {}, 
 function renderTabs() {
   const t = $("#tabs"); if (!t) return;
   const p = A.polls.get(A.sel), nk = p ? p.participants.filter((x) => x.status === "kicked").length : 0;
-  const tabs = [["live", "👥 Ao vivo"], ["resultados", "📊 Resultados"], ["bloqueados", "🚫 Bloqueados" + (nk ? ` (${nk})` : "")], ["qr", "🔳 QR Code"], ["config", "⚙️ Configurar"]];
+  const tabs = [["live", "👥 Ao vivo"], ["resultados", "📊 Resultados"], ["bloqueados", "🚫 Bloqueados" + (nk ? ` (${nk})` : "")], ["qr", "🔳 QR Code"], ["previa", "👁 Prévia"], ["config", "⚙️ Configurar"]];
   t.replaceChildren(...tabs.map(([k, l]) => h("button", { type: "button", class: A.tab === k ? "on" : "", onclick: () => { A.tab = k; renderTabs(); renderTab(); } }, l)));
 }
 function renderTab() {
   const el = $("#tab"); const p = A.polls.get(A.sel); if (!el || !p) return;
-  el.replaceChildren(A.tab === "live" ? tabLive(p) : A.tab === "resultados" ? tabResults(p) : A.tab === "bloqueados" ? tabBlocked(p) : A.tab === "qr" ? tabQR(p) : configTab(p));
+  el.replaceChildren(A.tab === "live" ? tabLive(p) : A.tab === "resultados" ? tabResults(p) : A.tab === "bloqueados" ? tabBlocked(p) : A.tab === "qr" ? tabQR(p) : A.tab === "previa" ? tabPreview(p) : configTab(p));
+}
+
+/* ---------- prévia: o formulário como o votante vê (nada é salvo) ---------- */
+function tabPreview(p) {
+  const url = `/v/${p.id}?preview=1`;
+  const frame = h("iframe", { class: "pvframe", src: url, title: "Prévia do formulário" });
+  return h("div", { class: "pvwrap" },
+    h("div", { class: "pvbar" }, h("span", { class: "small" }, "É assim que o votante vê. Nada aqui é salvo nem conta como voto."),
+      h("a", { class: "btn ghost sm", href: url, target: "_blank", rel: "noopener" }, "↗ Abrir em nova aba")),
+    h("div", { class: "pvphone" }, frame));
 }
 
 /* ---------- ao vivo (participantes) ---------- */

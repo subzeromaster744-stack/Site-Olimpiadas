@@ -52,6 +52,8 @@ Qualquer pessoa que abrir o link principal pode **criar uma conta** (usuário + 
 
 Na lista "Seus formulários" dá para criar **pastas** (e subpastas, até 6 níveis), arrastar formulários e pastas para dentro delas e recolher/expandir cada uma. No celular, use o menu ⋮ → "Mover para…". Cada organizador tem as próprias pastas (o administrador também). Excluir uma pasta não apaga nada: o conteúdo sobe um nível.
 
+**Ordem:** arraste um formulário (ou pasta) para cima/baixo de outro — uma linha mostra onde vai cair — ou use ⋮ → ⬆ Subir / ⬇ Descer. A ordem é por usuário. Ao trocar de formulário na lateral, a aba aberta (Configurar, Resultados…) é mantida. A aba **👁 Prévia** mostra o formulário como o votante vê, sem salvar nada.
+
 ## Estrutura
 ```
 src/worker.js   entrada: login admin (HMAC), roteia API/WebSocket para o Durable Object, serve /public

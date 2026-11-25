@@ -333,6 +333,15 @@ ok(csv.status === 200 && (await csv.text()).includes("Maria Silva"), "exportar C
 // páginas
 for (const [p, s] of [["/", 200], ["/admin", 200], [`/v/${poll.id}`, 200]]) { const r = await fetch(BASE + p); ok(r.status === s, `GET ${p} = ${r.status}`); }
 
+// ordem manual
+{
+  const p2 = (await J("/api/polls", { method: "POST", headers: AH, body: JSON.stringify({ rodada: "Ord", categoria: "B" }) })).b;
+  x = await J("/api/order", { method: "PUT", headers: AH, body: JSON.stringify({ ids: [p2.id, poll.id] }) });
+  ok(x.r.status === 200 && x.b.order[p2.id] === 0 && x.b.order[poll.id] === 1, "ordem manual salva");
+  x = await J("/api/order", { method: "PUT", body: JSON.stringify({ ids: [p2.id] }) });
+  ok(x.r.status === 401, "ordem sem login = 401");
+  await J(`/api/polls/${p2.id}`, { method: "DELETE", headers: AH });
+}
 // excluir
 x = await J(`/api/polls/${poll.id}`, { method: "DELETE", headers: AH }); await sleep(300);
 ok(x.r.status === 200 && sm2.msgs.some((m) => m.t === "denied"), "excluir votação avisa votantes");

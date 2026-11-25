@@ -243,3 +243,13 @@ tfoot td{background:var(--soft)}
 .plist li.nest{border-left:3px solid #b9d6ea;border-radius:2px 12px 12px 2px;padding-left:8px}
 .plist li.pit.nest button:not(.kebab){border-radius:10px}.plist li.frow.nest{border-left-width:3px}
 .sidehead{margin-top:20px}
+
+/* ordem na lateral: linha indicadora de onde o item vai cair */
+.plist li.mk-before{box-shadow:0 -3px 0 0 var(--accent,#2563eb)}
+.plist li.mk-after{box-shadow:0 3px 0 0 var(--accent,#2563eb)}
+/* prévia */
+.pvwrap{display:flex;flex-direction:column;gap:12px}
+.pvbar{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+.pvphone{margin:0 auto;width:100%;max-width:420px;border:8px solid #1f2937;border-radius:28px;overflow:hidden;background:#fff}
+.pvframe{display:block;width:100%;height:70vh;min-height:520px;border:0}
+.pvtag{position:fixed;top:6px;right:6px;z-index:50;background:#1f2937;color:#fff;font-size:11px;padding:3px 9px;border-radius:999px;opacity:.85;pointer-events:none}

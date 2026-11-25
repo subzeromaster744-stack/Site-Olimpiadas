@@ -83,6 +83,8 @@ export class Hub extends DurableObject {
          id TEXT PRIMARY KEY, owner TEXT NOT NULL, name TEXT NOT NULL, parent TEXT, created_at INTEGER NOT NULL)`);
     x(`CREATE TABLE IF NOT EXISTS placement (
          owner TEXT NOT NULL, poll_id TEXT NOT NULL, folder_id TEXT NOT NULL, PRIMARY KEY (owner, poll_id))`);
+    x(`CREATE TABLE IF NOT EXISTS ord (
+         owner TEXT NOT NULL, id TEXT NOT NULL, pos INTEGER NOT NULL, PRIMARY KEY (owner, id))`);
     x(`CREATE TABLE IF NOT EXISTS users (
          id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
          salt TEXT NOT NULL, hash TEXT NOT NULL, created_at INTEGER NOT NULL)`);
@@ -200,7 +202,9 @@ export class Hub extends DurableObject {
     const folders = this.q("SELECT id, name, parent FROM folders WHERE owner=? ORDER BY name COLLATE NOCASE", owner);
     const placement = {};
     for (const r of this.q("SELECT poll_id, folder_id FROM placement WHERE owner=?", owner)) placement[r.poll_id] = r.folder_id;
-    return { folders, placement };
+    const order = {};
+    for (const r of this.q("SELECT id, pos FROM ord WHERE owner=?", owner)) order[r.id] = r.pos;
+    return { folders, placement, order };
   }
   pushFolders(owner) {
     const s = JSON.stringify({ t: "folders", ...this.foldersState(owner) });
@@ -256,10 +260,20 @@ export class Hub extends DurableObject {
         this.sql.exec("UPDATE folders SET parent=? WHERE parent=? AND owner=?", up, id, owner);
         if (up) this.sql.exec("UPDATE placement SET folder_id=? WHERE folder_id=? AND owner=?", up, id, owner);
         else this.sql.exec("DELETE FROM placement WHERE folder_id=? AND owner=?", id, owner);
-        this.sql.exec("DELETE FROM folders WHERE id=?", id);
+        this.sql.exec("DELETE FROM folders WHERE id=?", id); this.sql.exec("DELETE FROM ord WHERE id=?", id);
         this.pushFolders(owner);
         return json(this.foldersState(owner));
       }
+    }
+    if (path === "/api/order" && method === "PUT") { // ordem manual: lista de ids (formulários e/ou pastas) na sequência desejada
+      const ids = Array.isArray(b.ids) ? b.ids.map(String).slice(0, 2000) : [];
+      let i = 0;
+      for (const id of ids) {
+        const ok = this.q("SELECT 1 AS x FROM folders WHERE id=? AND owner=?", id, owner).length || (() => { const r = this.pollRow(id); return r && mine(r); })();
+        if (ok) this.sql.exec("INSERT OR REPLACE INTO ord (owner, id, pos) VALUES (?,?,?)", owner, id, i++);
+      }
+      this.pushFolders(owner);
+      return json(this.foldersState(owner));
     }
     if (path === "/api/placement" && method === "PUT") {
       const pid = String(b.poll || ""), folder = b.folder || null;
@@ -374,7 +388,7 @@ export class Hub extends DurableObject {
 
     if (!admin && !uid) return json({ error: "unauthorized" }, 401);
     const mine = (r) => admin || r.owner === uid;
-    if (path.startsWith("/api/folders") || path === "/api/placement") {
+    if (path.startsWith("/api/folders") || path === "/api/placement" || path === "/api/order") {
       const resp = await this.folderRoutes(path, method, request, admin ? "admin" : uid, mine);
       if (resp) return resp;
     }
@@ -429,7 +443,7 @@ export class Hub extends DurableObject {
         for (const t of ["votes", "participants", "images", "sent"]) this.sql.exec(`DELETE FROM ${t} WHERE poll_id=?`, id);
         this.dropDoc(id);
         this.sql.exec("DELETE FROM polls WHERE id=?", id);
-        this.sql.exec("DELETE FROM placement WHERE poll_id=?", id);
+        this.sql.exec("DELETE FROM placement WHERE poll_id=?", id); this.sql.exec("DELETE FROM ord WHERE id=?", id);
         this.toAdmins({ t: "deleted", poll: id }, r.owner);
         return json({ ok: true });
       }
