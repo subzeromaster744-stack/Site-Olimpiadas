@@ -265,22 +265,12 @@ const kpi = (n, l, cls) => h("div", { class: "kpi " + (cls || "") }, h("b", {}, 
 function renderTabs() {
   const t = $("#tabs"); if (!t) return;
   const p = A.polls.get(A.sel), nk = p ? p.participants.filter((x) => x.status === "kicked").length : 0;
-  const tabs = [["live", "👥 Ao vivo"], ["resultados", "📊 Resultados"], ["bloqueados", "🚫 Bloqueados" + (nk ? ` (${nk})` : "")], ["qr", "🔳 QR Code"], ["previa", "👁 Prévia"], ["config", "⚙️ Configurar"]];
+  const tabs = [["live", "👥 Ao vivo"], ["resultados", "📊 Resultados"], ["bloqueados", "🚫 Bloqueados" + (nk ? ` (${nk})` : "")], ["qr", "🔳 QR Code"], ["config", "⚙️ Configurar"]];
   t.replaceChildren(...tabs.map(([k, l]) => h("button", { type: "button", class: A.tab === k ? "on" : "", onclick: () => { A.tab = k; renderTabs(); renderTab(); } }, l)));
 }
 function renderTab() {
   const el = $("#tab"); const p = A.polls.get(A.sel); if (!el || !p) return;
-  el.replaceChildren(A.tab === "live" ? tabLive(p) : A.tab === "resultados" ? tabResults(p) : A.tab === "bloqueados" ? tabBlocked(p) : A.tab === "qr" ? tabQR(p) : A.tab === "previa" ? tabPreview(p) : configTab(p));
-}
-
-/* ---------- prévia: o formulário como o votante vê (nada é salvo) ---------- */
-function tabPreview(p) {
-  const url = `/v/${p.id}?preview=1`;
-  const frame = h("iframe", { class: "pvframe", src: url, title: "Prévia do formulário" });
-  return h("div", { class: "pvwrap" },
-    h("div", { class: "pvbar" }, h("span", { class: "small" }, "É assim que o votante vê. Nada aqui é salvo nem conta como voto."),
-      h("a", { class: "btn ghost sm", href: url, target: "_blank", rel: "noopener" }, "↗ Abrir em nova aba")),
-    h("div", { class: "pvphone" }, frame));
+  el.replaceChildren(A.tab === "live" ? tabLive(p) : A.tab === "resultados" ? tabResults(p) : A.tab === "bloqueados" ? tabBlocked(p) : A.tab === "qr" ? tabQR(p) : configTab(p));
 }
 
 /* ---------- ao vivo (participantes) ---------- */

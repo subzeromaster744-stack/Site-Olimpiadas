@@ -4,7 +4,6 @@ const KEY = "olp:" + pollId;
 const ESCALA = ["Muito fraco", "Fraco", "Regular", "Bom", "Excelente"];
 const S = { poll: null, token: null, name: null, votes: {}, step: 0, conn: "off", dead: null, sock: null, nameErr: "", busy: false, sent: new Set(), pending: null, sendErr: "" };
 const root = $("#root");
-const PREVIEW = new URLSearchParams(location.search).has("preview");
 
 const save = () => { try { localStorage.setItem(KEY, JSON.stringify({ token: S.token, name: S.name })); } catch {} };
 const load = () => { try { return JSON.parse(localStorage.getItem(KEY) || "null"); } catch { return null; } };
@@ -23,11 +22,6 @@ const theme = () => applyTheme(document.body, S.poll?.theme);
   if (r.status === 404) return full("🔎", "Votação não encontrada", "Este link ou QR code não está mais ativo.");
   S.poll = await r.json();
   document.title = S.poll.title; theme();
-  if (PREVIEW) { // prévia do organizador: não entra, não abre conexão, nada é salvo
-    S.name = "Prévia"; S.conn = "on"; S.step = 0;
-    document.body.append(h("div", { class: "pvtag" }, "👁 PRÉVIA — nada é salvo"));
-    return render();
-  }
   const st = load();
   if (st?.token) {
     const j = await join({ token: st.token });
@@ -153,7 +147,6 @@ function viewSection(i) {
     const qs = document.querySelectorAll(".q"); qs.forEach((el, j) => el.classList.toggle("err", miss.includes(j)));
     if (miss.length) { qs[miss[0]].scrollIntoView({ behavior: "smooth", block: "center" }); return; }
     S.sendErr = ""; S.pending = i;
-    if (PREVIEW) { S.pending = null; S.sent.add(i); const fu = firstUnsent(); S.step = fu === -1 ? "done" : fu; render(); window.scrollTo(0, 0); return; }
     if (!S.sock?.send({ t: "submit", sec: i })) { S.pending = null; S.sendErr = "Sem conexão. Aguarde reconectar e tente de novo."; }
     else setTimeout(() => { if (S.pending === i) { S.pending = null; S.sendErr = "Não foi possível enviar agora. Tente novamente."; render(true); } }, 8000);
     render(true);
